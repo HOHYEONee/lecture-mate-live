@@ -1,6 +1,11 @@
 # lecture-mate-live
 A real-time multimodal AI learning assistant that understands online lectures through screen capture, audio transcription, and context-aware Q&amp;A.
 
+## 개발 시작
+
+- **[처음 개발하는 팀원: 환경 설정·담당자별 첫 작업·독립 테스트](docs/getting-started.md)**
+- [준비된 공통 시계·세션 관리 코드](core/README.md)
+
 ## 팀 개발 문서
 
 - [프로젝트 개요·모듈별 역할](interface_spec/README.md)
