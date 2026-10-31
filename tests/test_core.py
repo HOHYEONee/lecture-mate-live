@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from inspect import signature
+from pathlib import Path
 from unittest.mock import patch
 
 from core import SessionClock, SessionManager
+from interface_spec.contracts import FrameProcessorAPI
 
 
 class FakeTime:
@@ -51,6 +54,14 @@ class SessionClockTests(unittest.TestCase):
             self.assertEqual(clock.now_ms(), 150)
 
 
+class ContractTests(unittest.TestCase):
+    def test_frame_start_receives_shared_session_directory(self) -> None:
+        self.assertEqual(
+            list(signature(FrameProcessorAPI.start).parameters),
+            ["self", "session_id", "session_dir", "clock", "output_queue", "on_error"],
+        )
+
+
 class SessionManagerTests(unittest.TestCase):
     def test_resources_and_session_lifecycle(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -59,6 +70,8 @@ class SessionManagerTests(unittest.TestCase):
 
             self.assertEqual(manager.active_session, session)
             self.assertEqual(len(session.session_id), 32)
+            self.assertTrue(session.session_dir.is_absolute())
+            self.assertEqual(session.session_dir, Path(temp_dir).resolve() / session.session_id)
             self.assertTrue((session.session_dir / "frames").is_dir())
             self.assertFalse((session.session_dir / "metadata.db").exists())
             self.assertEqual(session.output_queue.maxsize, 3)

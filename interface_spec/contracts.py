@@ -1,4 +1,4 @@
-"""CLUE P-실무프로젝트: 모듈 간 공통 데이터/API 계약 v1.5.
+"""CLUE P-실무프로젝트: 모듈 간 공통 데이터/API 계약 v1.6.
 
 이 파일은 인터페이스 정의만 포함합니다. 실제 캡처, 전사, DB, UI 구현은
 담당 모듈에서 수행합니다. Python 3.11 이상을 기준으로 합니다.
@@ -275,6 +275,7 @@ class FrameProcessorAPI(Protocol):
     def start(
         self,
         session_id: str,
+        session_dir: str,
         clock: SessionClockView,
         output_queue: Queue[IngestEvent],
         on_error: ErrorCallback,

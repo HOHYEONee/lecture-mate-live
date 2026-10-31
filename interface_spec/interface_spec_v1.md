@@ -1,4 +1,4 @@
-# CLUE 모듈 인터페이스 명세 v1.5
+# CLUE 모듈 인터페이스 명세 v1.6
 
 **프로젝트:** 온라인 강의의 실시간 맥락을 이해하는 멀티모달 AI 학습 파트너  
 **대상:** Windows / Python 3.11+ / PySide6 / 단일 프로세스 내 독립 작업 스레드  
@@ -116,7 +116,8 @@ sessions/
       <frame_id>.jpg
 ```
 
-- 앱은 세션 디렉터리를 만든다. 프레임 모듈은 `frames/`의 이미지 파일을 저장한다.
+- 앱은 세션 디렉터리를 만들고 `session_dir`의 절대 경로를 프레임 처리와 맥락 관리에 동일하게 전달한다. **`FrameProcessorAPI.start(session_id, session_dir, clock, output_queue, on_error)`**를 사용한다. 프레임 모듈은 전달된 `session_dir/frames/`에 이미지 파일을 저장한다.
+- 기본 저장 루트는 프로그램 실행 시 작업 디렉터리의 `sessions/`이다. 앱 UI에서 저장 위치를 변경하는 기능은 초기 범위에 넣지 않는다. `SessionManager(sessions_root=...)`는 테스트·개발자 설정용이며, 루트가 달라져도 내부 구조는 동일하다.
 - `FrameRecord.image_path`는 `frames/<frame_id>.jpg`와 같은 **세션 기준 상대 경로**이다.
 - 맥락 관리 모듈만 SQLite 메타데이터 쓰기를 전담한다. 프레임·음성 모듈과 RAG 검색 엔진은 SQLite를 직접 수정하지 않는다.
 - 권장 논리 테이블: `frames`, `frame_history`, `transcripts`, `questions`, `answers`, `text_chunks`, `chunk_embeddings`.

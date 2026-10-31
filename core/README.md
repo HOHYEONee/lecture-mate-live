@@ -12,16 +12,23 @@
 ```python
 from core import SessionManager
 
-manager = SessionManager(sessions_root="sessions", queue_maxsize=1000)
+manager = SessionManager(queue_maxsize=1000)
 session = manager.start_session()
 
 context_qa.start(
     session.session_id, str(session.session_dir),
     session.output_queue, on_answer_event, on_error,
 )
-frame_processor.start(session.session_id, session.clock, session.output_queue, on_error)
+frame_processor.start(
+    session.session_id, str(session.session_dir),
+    session.clock, session.output_queue, on_error,
+)
 audio_processor.start(session.session_id, session.clock, session.output_queue, on_error)
 ```
+
+세션 저장 구조는 기본적으로 `sessions/<session_id>/frames/`와 `sessions/<session_id>/metadata.db`로 통일합니다. `SessionManager`가 만든 절대 경로 `session.session_dir`를 **프레임 처리와 맥락 관리에 모두 전달**합니다. 프레임 모듈은 전달받은 `session_dir/frames/`에 저장하고, `FrameRecord.image_path`에는 `frames/<frame_id>.jpg` 같은 세션 상대 경로만 기록합니다.
+
+앱 UI에는 저장 위치 변경 기능이 없습니다. `sessions_root`는 테스트 또는 향후 개발자 설정용 옵션이며, 기본값은 프로그램 실행 시 작업 디렉터리 아래 `sessions/`입니다. 저장 루트가 달라져도 각 모듈은 전달된 `session_dir`를 사용하므로 내부 폴더 구조는 같습니다.
 
 프레임·음성 모듈은 전달받은 시계에서 `now_ms()`만 사용합니다. 앱은 일시정지 시 **두 수집 모듈의 중지 완료를 확인한 뒤** `session.clock.pause()`를 호출합니다. 재개 준비 후에는 `session.clock.resume()`와 수집 재개를 순서대로 제어합니다.
 

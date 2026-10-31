@@ -32,7 +32,8 @@ class SessionManager:
     ) -> None:
         if queue_maxsize <= 0:
             raise ValueError("queue_maxsize must be positive")
-        self._sessions_root = Path(sessions_root)
+        # 세션 시작 시 절대 경로를 확정해 모듈별 경로 해석 차이를 방지한다.
+        self._sessions_root = Path(sessions_root).resolve()
         self._queue_maxsize = queue_maxsize
         self._active: SessionResources | None = None
         self._lock = Lock()
