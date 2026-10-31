@@ -9,3 +9,8 @@ A real-time multimodal AI learning assistant that understands online lectures th
 - [기존 제안서 대비 변경 사항](interface_spec/proposal_changes.md)
 
 각 팀원은 `interface_spec/README.md`에서 전체 흐름과 담당 범위를 확인한 뒤 상세 명세와 공통 계약을 참고합니다.
+
+## 공통 실행 기반
+
+- [공통 시계·세션 리소스 최소 구현과 사용법](core/README.md)
+- 테스트: `python -m unittest discover -s tests -v`
