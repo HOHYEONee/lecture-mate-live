@@ -160,11 +160,22 @@ class ContextStore:
             raise ValueError(f"session mismatch: {session_id!r} != {self.session_id!r}")
 
     def add_event(self, event: IngestEvent) -> bool:
-        if isinstance(event, FrameRecord):
-            return self.add_frame(event)
-        if isinstance(event, TranscriptSegment):
-            return self.add_transcript(event)
-        raise TypeError(f"unsupported ingest event: {type(event).__name__}")
+        return self.add_events((event,)) == 1
+
+    def add_events(self, events: Iterable[IngestEvent]) -> int:
+        events = tuple(events)
+        for event in events:
+            if not isinstance(event, (FrameRecord, TranscriptSegment)):
+                raise TypeError(f"unsupported ingest event: {type(event).__name__}")
+            self._check_session(event.session_id)
+        inserted = 0
+        with self._lock, self._conn:
+            for event in events:
+                if isinstance(event, FrameRecord):
+                    inserted += self._insert_frame(event)
+                else:
+                    inserted += self._insert_transcript(event)
+        return inserted
 
     def add_frame(self, record: FrameRecord) -> bool:
         self._check_session(record.session_id)
@@ -204,17 +215,20 @@ class ContextStore:
     def add_transcript(self, segment: TranscriptSegment) -> bool:
         self._check_session(segment.session_id)
         with self._lock, self._conn:
-            cur = self._conn.execute(
-                "INSERT OR IGNORE INTO transcripts VALUES (?, ?, ?, ?, ?)",
-                (
-                    segment.session_id,
-                    segment.segment_id,
-                    segment.start_ms,
-                    segment.end_ms,
-                    segment.text,
-                ),
-            )
-            return cur.rowcount == 1
+            return self._insert_transcript(segment)
+
+    def _insert_transcript(self, segment: TranscriptSegment) -> bool:
+        cur = self._conn.execute(
+            "INSERT OR IGNORE INTO transcripts VALUES (?, ?, ?, ?, ?)",
+            (
+                segment.session_id,
+                segment.segment_id,
+                segment.start_ms,
+                segment.end_ms,
+                segment.text,
+            ),
+        )
+        return cur.rowcount == 1
 
     def add_question(self, request: QuestionRequest) -> bool:
         self._check_session(request.session_id)
