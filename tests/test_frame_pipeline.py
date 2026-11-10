@@ -4,11 +4,12 @@ from concurrent.futures import ThreadPoolExecutor
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import cv2
 import numpy as np
 
-from frame_processing.comparison import SSIMComparator
+from frame_processing.comparison import SSIMComparator, decide_periodic
 from frame_processing.pipeline import FramePipeline, FrameProcessingError
 from frame_processing.storage import JPEGFrameStore
 from interface_spec.contracts import CaptureRegion, FrameDecision as D, FrameSource as S, FrameType
@@ -120,6 +121,77 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(returned.decision, D.NEW_GROUP)
         self.assertNotEqual(first.group_id, returned.group_id)
         self.assertNotEqual(first.frame_id, returned.frame_id)
+
+    def test_short_circuit_skips_representative_after_dissimilar_previous(self):
+        comp = SSIMComparator(.9)
+        black = np.zeros_like(self.white)
+        p = self.pipeline(self.white, black, comparator=comp)
+        with patch.object(comp, "score", side_effect=[
+            .2, AssertionError("R/C must not be calculated when P/C is dissimilar"),
+        ]) as score:
+            first = p.periodic()
+            score.assert_not_called()
+            second = p.periodic()
+        self.assertEqual(score.call_count, 1)
+        self.assertEqual(second.decision, D.NEW_GROUP)
+        self.assertNotEqual(second.group_id, first.group_id)
+        self.assertNotEqual(second.frame_id, first.frame_id)
+        self.assertTrue((self.root / first.image_path).is_file())
+        self.assertTrue((self.root / second.image_path).is_file())
+
+    def test_short_circuit_preserves_pcr_decisions_and_boundaries(self):
+        cases = [
+            ("case_1", .2, .3, D.NEW_GROUP, 1),
+            ("case_2", .95, .3, D.NEW_REPRESENTATIVE, 2),
+            ("case_3", .95, .95, D.REUSED, 2),
+            ("case_4", .2, .95, D.NEW_GROUP, 1),
+            ("pc_at_threshold", .9, .899, D.NEW_REPRESENTATIVE, 2),
+            ("rc_at_threshold", .95, .9, D.REUSED, 2),
+            ("both_at_threshold", .9, .9, D.REUSED, 2),
+            ("pc_below_threshold", .899, .9, D.NEW_GROUP, 1),
+        ]
+        previous = np.full_like(self.white, 245)
+        current = np.zeros_like(self.white)
+        for name, pc, rc, expected, calls in cases:
+            with self.subTest(case=name):
+                root = self.root / name
+                root.mkdir()
+                comp = SSIMComparator(.9)
+                p = self.pipeline(self.white, previous, current, comparator=comp,
+                                  store=JPEGFrameStore(root))
+                with patch.object(comp, "score", side_effect=[.95, .95]) as score:
+                    first = p.periodic()
+                    reused = p.periodic()
+                    self.assertEqual(reused.decision, D.REUSED)
+                    score.reset_mock()
+                    score.side_effect = [pc, rc]
+                    result = p.periodic()
+                self.assertEqual(result.decision, expected)
+                self.assertEqual(result.decision, decide_periodic(pc, rc, .9))
+                self.assertEqual(score.call_count, calls)
+                # Verify P is the last observation, including an unsaved REUSED.
+                np.testing.assert_array_equal(score.call_args_list[0].args[0],
+                                              comp.prepare(previous))
+                np.testing.assert_array_equal(score.call_args_list[0].args[1],
+                                              comp.prepare(current))
+                if calls == 2:
+                    np.testing.assert_array_equal(score.call_args_list[1].args[0],
+                                                  comp.prepare(self.white))
+                    np.testing.assert_array_equal(score.call_args_list[1].args[1],
+                                                  comp.prepare(current))
+                if expected == D.NEW_GROUP:
+                    self.assertNotEqual(result.group_id, first.group_id)
+                else:
+                    self.assertEqual(result.group_id, first.group_id)
+                if expected == D.REUSED:
+                    self.assertEqual((result.frame_id, result.image_path, result.frame_type),
+                                     (first.frame_id, first.image_path, first.frame_type))
+                else:
+                    self.assertNotEqual(result.frame_id, first.frame_id)
+                self.assertEqual(result.capture_seq, 3)
+                self.assertEqual(len(list((root / "frames").glob("*.jpg"))),
+                                 1 if expected == D.REUSED else 2)
+                self.assertTrue((root / first.image_path).is_file())
 
     def test_timestamp_is_captured_before_classification_and_storage(self):
         p = self.pipeline(self.white)

@@ -102,11 +102,16 @@ class FramePipeline:
                 if self._previous is None or current.shape != self._previous.shape:
                     decision = FrameDecision.NEW_GROUP
                 else:
-                    decision = decide_periodic(
-                        self.comparator.score(self._previous, current),
-                        self.comparator.score(self._representative, current),
-                        self.comparator.threshold,
-                    )
+                    s_pc = self.comparator.score(self._previous, current)
+                    if s_pc < self.comparator.threshold:
+                        # P/C alone establishes a new group, including Case 4.
+                        decision = FrameDecision.NEW_GROUP
+                    else:
+                        decision = decide_periodic(
+                            s_pc,
+                            self.comparator.score(self._representative, current),
+                            self.comparator.threshold,
+                        )
             except Exception as exc:
                 raise FrameProcessingError("COMPARE_FAILED", str(exc), observation.timestamp_ms) from exc
             compared = perf_counter()
