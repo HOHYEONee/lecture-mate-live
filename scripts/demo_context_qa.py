@@ -74,6 +74,9 @@ def main() -> int:
     parser.add_argument("--effort")
     parser.add_argument("--fake", action="store_true")
     args = parser.parse_args()
+    for flag, path in (("--start-image", args.start_image), ("--submit-image", args.submit_image), ("--transcript", args.transcript)):
+        if not path.is_file():
+            parser.error(f"{flag}: file not found: {path.resolve()}")
 
     segments = load_transcript(args.transcript)
     submitted_ms = parse_mmss(args.submitted) if args.submitted else max((s.end_ms for s in segments), default=10_000)
