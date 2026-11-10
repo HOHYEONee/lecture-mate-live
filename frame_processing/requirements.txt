@@ -1,0 +1,5 @@
+# Frame module only; no changes to shared or other modules' dependencies.
+numpy>=1.26,<3
+opencv-python>=4.8,<6
+mss>=10,<11
+scikit-image>=0.25,<0.27
