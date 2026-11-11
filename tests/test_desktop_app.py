@@ -354,6 +354,23 @@ class DesktopControllerTests(unittest.TestCase):
         self.assertGreater(selected[0].width, 0)
         self.assertGreater(selected[0].height, 0)
 
+    def test_window_hides_during_area_selection_and_returns_on_cancel(self) -> None:
+        controller, *_ = self.make_controller()
+        window = MainWindow(controller)
+        self.addCleanup(window.close)
+        window.show()
+        QTest.qWait(10)
+        window._choose_region()
+        selector = window._selector
+        self.assertIsNotNone(selector)
+        self.assertFalse(window.isVisible())
+        self.assertTrue(selector.isVisible())
+        QTest.keyClick(selector, Qt.Key.Key_Escape)
+        QTest.qWait(20)
+        self.assertTrue(window.isVisible())
+        self.assertIsNone(window._selector)
+        self.assertEqual(window.collection_label.text(), "영역 선택 취소됨")
+
     def test_stop_requests_cancellation_of_active_question(self) -> None:
         class PendingContext(MockContextQA):
             def ask_async(self, request) -> None:

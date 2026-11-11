@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from PySide6.QtCore import QPoint, QRect, Qt, Signal
-from PySide6.QtGui import QColor, QGuiApplication, QMouseEvent, QPainter, QPen
+from PySide6.QtGui import QColor, QCloseEvent, QGuiApplication, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
 from interface_spec.contracts import CaptureRegion
@@ -13,6 +13,7 @@ from interface_spec.contracts import CaptureRegion
 class RegionSelector(QWidget):
     region_selected = Signal(object)
     cancelled = Signal()
+    finished = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -26,6 +27,7 @@ class RegionSelector(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._origin_global: QPoint | None = None
         self._current_global: QPoint | None = None
+        self._selection_completed = False
         self._physical_monitor_rects = self._load_physical_monitor_rects()
         screens = QGuiApplication.screens()
         if not screens:
@@ -148,6 +150,7 @@ class RegionSelector(QWidget):
         physical_end = self._physical_point(end)
         rect = QRect(physical_start, physical_end).normalized()
         if rect.width() > 1 and rect.height() > 1:
+            self._selection_completed = True
             self.region_selected.emit(
                 CaptureRegion(rect.left(), rect.top(), rect.width(), rect.height())
             )
@@ -159,7 +162,12 @@ class RegionSelector(QWidget):
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
         if event.key() == Qt.Key.Key_Escape:
-            self.cancelled.emit()
             self.close()
             return
         super().keyPressEvent(event)
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        if not self._selection_completed:
+            self.cancelled.emit()
+        self.finished.emit()
+        event.accept()

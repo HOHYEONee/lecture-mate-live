@@ -174,13 +174,31 @@ class MainWindow(QMainWindow):
     def _choose_region(self) -> None:
         if self.controller.state not in (SessionState.IDLE, SessionState.PAUSED):
             return
-        selector = RegionSelector(self)
+        selector = RegionSelector()
         self._selector = selector
         selector.region_selected.connect(self._region_selected)
-        selector.cancelled.connect(lambda: self.collection_label.setText("영역 선택 취소됨"))
-        selector.show()
-        selector.activateWindow()
-        selector.setFocus()
+        selector.cancelled.connect(self._selection_cancelled)
+        selector.finished.connect(self._restore_after_selection)
+        self.hide()
+        try:
+            selector.show()
+            selector.activateWindow()
+            selector.setFocus()
+        except Exception:
+            self.show()
+            self.activateWindow()
+            raise
+
+    @Slot()
+    def _selection_cancelled(self) -> None:
+        self.collection_label.setText("영역 선택 취소됨")
+
+    @Slot()
+    def _restore_after_selection(self) -> None:
+        self._selector = None
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
     @Slot(object)
     def _region_selected(self, region: CaptureRegion) -> None:
