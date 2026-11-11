@@ -1,9 +1,11 @@
 from .llm import FakeLLM, LLMClient, LLMError, LLMRequest, OpenAIClient, Usage
 from .prompt import build_prompt, format_ms
 from .service import ContextQAService
-from .store import ContextStore, FrameObservation, QAPair, StoredFrame
+from .store import AnswerRecord, AnswerStatus, ContextStore, FrameObservation, QAPair, StoredFrame
 
 __all__ = [
+    "AnswerRecord",
+    "AnswerStatus",
     "ContextQAService",
     "ContextStore",
     "FakeLLM",

@@ -2,12 +2,22 @@ from __future__ import annotations
 
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from queue import Queue
 from types import SimpleNamespace
 
-from context_qa import ContextQAService, FakeLLM, LLMError, OpenAIClient, build_prompt, format_ms
+from context_qa import (
+    AnswerStatus,
+    ContextQAService,
+    ContextStore,
+    FakeLLM,
+    LLMError,
+    OpenAIClient,
+    build_prompt,
+    format_ms,
+)
 from context_qa.llm import ImagePart, LLMRequest, TextPart
 from interface_spec.contracts import (
     AnswerCancelled,
@@ -51,6 +61,15 @@ def question(qid: str, submitted_ms: int, seq: int = 100, text: str = "이 그�
         input_frame=snapshot(seq, submitted_ms - 2000, f"{qid}_in", FrameSource.QUESTION_START),
         submit_frame=snapshot(seq + 1, submitted_ms, f"{qid}_sub", FrameSource.QUESTION_SUBMIT),
     )
+
+
+def wait_records(store: ContextStore, count: int, timeout: float = 5.0) -> dict:
+    deadline = time.monotonic() + timeout
+    while True:
+        records = {r.question_id: r for r in store.answer_records()}
+        if len(records) >= count or time.monotonic() > deadline:
+            return records
+        time.sleep(0.01)
 
 
 class EventLog:
@@ -128,6 +147,12 @@ class AnswerFlowTests(QATestBase):
 
         qa = store.recent_qa()
         self.assertEqual([(p.question_id, p.answer) for p in qa], [("q1", self.llm.text)])
+        record = store.answer_records()[0]
+        self.assertEqual(record.status, AnswerStatus.COMPLETED)
+        self.assertEqual((record.model, record.strategy), ("fake-llm", "minimal"))
+        usage = self.service.last_usage
+        assert usage is not None
+        self.assertEqual((record.input_tokens, record.output_tokens), (usage.input_tokens, usage.output_tokens))
         self.assertEqual(store.count("frame_history"), 2)
         self.assertEqual(self.errors, [])
 
@@ -164,6 +189,10 @@ class FailureTests(QATestBase):
         store = self.service.store
         assert store is not None
         self.assertEqual([p.question_id for p in store.recent_qa()], ["q2"])
+        records = wait_records(store, 2)
+        self.assertEqual(records["q1"].status, AnswerStatus.FAILED)
+        self.assertEqual(records["q1"].error_code, "llm_request_failed")
+        self.assertEqual(records["q2"].status, AnswerStatus.COMPLETED)
 
     def test_unexpected_exception_becomes_internal_error(self) -> None:
         self.llm.error = RuntimeError("bug")
@@ -209,6 +238,9 @@ class ConcurrencyTests(QATestBase):
         store = self.service.store
         assert store is not None
         self.assertEqual([p.question_id for p in store.recent_qa()], ["q2"])
+        records = wait_records(store, 2)
+        self.assertEqual(records["q1"].status, AnswerStatus.CANCELLED)
+        self.assertEqual(records["q1"].answer, "ab")
 
     def test_cancel_unknown_question_is_ignored(self) -> None:
         self.service.cancel_question("nope")
@@ -221,6 +253,9 @@ class ConcurrencyTests(QATestBase):
         self.hold.set()
         terminals = [e for e in self.log.for_question("q1") if isinstance(e, TERMINAL)]
         self.assertEqual([type(e) for e in terminals], [AnswerCancelled])
+        with ContextStore(SID, self.session_dir / "metadata.db") as store:
+            records = store.answer_records()
+        self.assertEqual([(r.question_id, r.status) for r in records], [("q1", AnswerStatus.CANCELLED)])
 
 
 class PromptTests(unittest.TestCase):

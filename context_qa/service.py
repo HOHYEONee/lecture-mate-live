@@ -33,6 +33,9 @@ class _QuestionTask:
     parts: list[str] = field(default_factory=list)
     done: bool = False
     usage: Usage | None = None
+    registered: bool = False
+    recorded: bool = False
+    terminal: AnswerEvent | None = None
 
     def elapsed_ms(self) -> int:
         return (time.monotonic_ns() - self.started_ns) // 1_000_000
@@ -46,8 +49,10 @@ class ContextQAService:
         batch_size: int = 100,
         poll_timeout_s: float = 0.2,
         stop_timeout_s: float = 5.0,
+        strategy: str = "minimal",
     ) -> None:
         self._llm = llm
+        self._strategy = strategy
         self._recent_window_ms = recent_window_ms
         self._batch_size = batch_size
         self._poll_timeout_s = poll_timeout_s
@@ -140,6 +145,8 @@ class ContextQAService:
             self.cancel_question(active.request.question_id)
         if qa_thread is not None:
             qa_thread.join(timeout=self._stop_timeout_s)
+        if active is not None and active.registered and active.terminal is not None:
+            self._record(active, active.terminal)
         self._ingest_thread = None
         if self._store is not None:
             self._store.close()
@@ -150,6 +157,7 @@ class ContextQAService:
         try:
             assert self._store is not None and self._session_dir is not None
             self._store.add_question(request)
+            task.registered = True
             since = request.submitted_ms - self._recent_window_ms
             transcripts = self._store.transcripts_between(
                 since if since > 0 else None, request.submitted_ms
@@ -185,10 +193,7 @@ class ContextQAService:
                 if task.done:
                     return
                 self.last_usage = task.usage
-                try:
-                    self._store.add_answer(result)
-                except Exception as exc:
-                    self._report("db_write_failed", f"answer {request.question_id}: {exc}", True, request.question_id)
+                self._record(task, result)
                 self._finish(task, result)
         except LLMError as exc:
             self._finish(task, _failed(task, exc.code, str(exc)))
@@ -199,11 +204,39 @@ class ContextQAService:
             self._finish(task, _failed(task, "internal_error", f"{type(exc).__name__}: {exc}"))
         finally:
             if stream is not None:
+                if task.usage is None:
+                    task.usage = getattr(stream, "usage", None)
                 try:
                     stream.close()
                 except Exception:
                     pass
             self._finish(task, None)
+            if task.registered and task.terminal is not None and not isinstance(task.terminal, AnswerResult):
+                self._record(task, task.terminal)
+
+    def _record(self, task: _QuestionTask, event: AnswerEvent) -> None:
+        if self._store is None or isinstance(event, AnswerDelta):
+            return
+        with self._qa_lock:
+            if task.recorded:
+                return
+            task.recorded = True
+            usage = task.usage
+            try:
+                self._store.add_answer(
+                    event,
+                    input_tokens=usage.input_tokens if usage else None,
+                    output_tokens=usage.output_tokens if usage else None,
+                    model=self._model_name(),
+                    strategy=self._strategy,
+                )
+            except Exception as exc:
+                self._report("db_write_failed", f"answer {event.question_id}: {exc}", True, event.question_id)
+
+    def _model_name(self) -> str | None:
+        if self._llm is None:
+            return None
+        return getattr(self._llm, "model", None) or type(self._llm).__name__
 
     def _finish(self, task: _QuestionTask, event: AnswerEvent | None) -> None:
         with self._qa_lock:
@@ -212,6 +245,7 @@ class ContextQAService:
             if event is None:
                 event = _failed(task, "internal_error", "answer worker ended without a result")
             task.done = True
+            task.terminal = event
             if self._active is task:
                 self._active = None
             self._emit(event)

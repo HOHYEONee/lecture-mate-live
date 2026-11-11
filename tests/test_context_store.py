@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 import threading
 import unittest
 from pathlib import Path
 
-from context_qa import ContextStore
+from context_qa import AnswerStatus, ContextStore
 from interface_spec.contracts import (
+    AnswerCancelled,
+    AnswerFailed,
     AnswerResult,
     FrameDecision,
     FrameRecord,
@@ -177,6 +180,62 @@ class ContextStoreTests(unittest.TestCase):
         self.assertEqual(qa[-1].question, "질문6")
         self.assertEqual(qa[-1].answer, "답6")
         self.assertEqual(qa[-1].context_tag, 6)
+
+    def test_answer_status_and_metrics_are_recorded(self) -> None:
+        for i in range(3):
+            self.store.add_question(question(f"q{i}", 1000 * (i + 1) * 10), question_type="general" if i == 0 else None)
+        self.assertTrue(
+            self.store.add_answer(
+                answer("q0", "완료"), input_tokens=1200, output_tokens=80, model="m1", strategy="D"
+            )
+        )
+        self.assertTrue(self.store.add_answer(AnswerCancelled(SID, "q1", "부분", 300)))
+        self.assertTrue(self.store.add_answer(AnswerFailed(SID, "q2", "llm_request_failed", "boom", 50)))
+        self.assertFalse(self.store.add_answer(AnswerFailed(SID, "q0", "dup", "", 1)))
+
+        self.assertEqual([p.question_id for p in self.store.recent_qa()], ["q0"])
+        records = {r.question_id: r for r in self.store.answer_records()}
+        done = records["q0"]
+        self.assertEqual(done.status, AnswerStatus.COMPLETED)
+        self.assertEqual((done.input_tokens, done.output_tokens, done.model, done.strategy), (1200, 80, "m1", "D"))
+        self.assertEqual(done.question_type, "general")
+        self.assertEqual(done.used_frame_ids, ("f1",))
+        self.assertEqual(records["q1"].status, AnswerStatus.CANCELLED)
+        self.assertEqual(records["q1"].answer, "부분")
+        self.assertEqual(records["q2"].status, AnswerStatus.FAILED)
+        self.assertEqual(records["q2"].error_code, "llm_request_failed")
+        self.assertIsNone(records["q2"].input_tokens)
+
+    def test_migrates_database_created_with_old_schema(self) -> None:
+        self.store.close()
+        old_path = Path(self._tmp.name) / "old.db"
+        conn = sqlite3.connect(old_path)
+        conn.executescript(
+            """
+            CREATE TABLE questions (session_id TEXT NOT NULL, question_id TEXT NOT NULL, text TEXT NOT NULL,
+                input_started_ms INTEGER NOT NULL, submitted_ms INTEGER NOT NULL,
+                input_capture_seq INTEGER NOT NULL, submit_capture_seq INTEGER NOT NULL,
+                PRIMARY KEY (session_id, question_id));
+            CREATE TABLE answers (session_id TEXT NOT NULL, question_id TEXT NOT NULL, answer TEXT NOT NULL,
+                context_tag INTEGER, used_frame_ids TEXT NOT NULL, used_segment_ids TEXT NOT NULL,
+                first_response_latency_ms INTEGER, elapsed_ms INTEGER NOT NULL,
+                PRIMARY KEY (session_id, question_id));
+            INSERT INTO questions VALUES ('s1', 'old', '예전 질문', 0, 1000, 1, 2);
+            INSERT INTO answers VALUES ('s1', 'old', '예전 답', NULL, '[]', '[]', 10, 20);
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        self.store = ContextStore(SID, old_path)
+        self.store.add_question(question("q1", 5000), question_type="past_content")
+        self.store.add_answer(answer("q1"), input_tokens=5, model="m")
+        records = {r.question_id: r for r in self.store.answer_records()}
+        self.assertEqual(records["old"].status, AnswerStatus.COMPLETED)
+        self.assertIsNone(records["old"].model)
+        self.assertEqual(records["q1"].question_type, "past_content")
+        self.assertEqual(records["q1"].input_tokens, 5)
+        self.assertEqual([p.question_id for p in self.store.recent_qa()], ["old", "q1"])
 
     def test_chunks_round_trip_with_embeddings(self) -> None:
         c1, c2 = chunk("c1", 0, 5000), chunk("c2", 5000, 10000)
