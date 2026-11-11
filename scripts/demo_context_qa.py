@@ -6,6 +6,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 from queue import Queue
 
@@ -73,6 +74,7 @@ def main() -> int:
     parser.add_argument("--model")
     parser.add_argument("--effort")
     parser.add_argument("--fake", action="store_true")
+    parser.add_argument("--session-dir", type=Path, help="keep metadata.db and frames here (default: temporary)")
     args = parser.parse_args()
     for flag, path in (("--start-image", args.start_image), ("--submit-image", args.submit_image), ("--transcript", args.transcript)):
         if not path.is_file():
@@ -98,18 +100,19 @@ def main() -> int:
         outcome.append(event)
         done.set()
 
-    with tempfile.TemporaryDirectory(prefix="clue_demo_") as tmp:
-        session_dir = Path(tmp)
+    def run(session_dir: Path) -> tuple[bool, ContextQAService]:
         frames_dir = session_dir / "frames"
-        frames_dir.mkdir()
+        frames_dir.mkdir(parents=True, exist_ok=True)
+        stamp = time.time_ns() // 1_000_000
+        qid = f"q{stamp}"
         request = QuestionRequest(
             session_id=SESSION_ID,
-            question_id="q1",
+            question_id=qid,
             text=args.question,
             input_started_ms=input_ms,
             submitted_ms=submitted_ms,
-            input_frame=snapshot(1, input_ms, "q1_start", FrameSource.QUESTION_START, args.start_image, frames_dir),
-            submit_frame=snapshot(2, submitted_ms, "q1_submit", FrameSource.QUESTION_SUBMIT, args.submit_image, frames_dir),
+            input_frame=snapshot(stamp * 2, input_ms, f"{qid}_start", FrameSource.QUESTION_START, args.start_image, frames_dir),
+            submit_frame=snapshot(stamp * 2 + 1, submitted_ms, f"{qid}_submit", FrameSource.QUESTION_SUBMIT, args.submit_image, frames_dir),
         )
 
         queue: Queue = Queue(maxsize=1000)
@@ -119,11 +122,18 @@ def main() -> int:
             queue.put(segment)
         queue.join()
 
-        model = "FakeLLM" if args.fake else llm.model
-        print(f"model={model} transcripts={len(segments)} submitted={args.submitted or submitted_ms // 1000}s\n")
+        print(f"model={llm.model} question_id={qid} transcripts={len(segments)} submitted={args.submitted or submitted_ms // 1000}s\n")
         service.ask_async(request)
-        finished = done.wait(timeout=180)
+        ok = done.wait(timeout=180)
         service.drain_and_stop()
+        return ok, service
+
+    if args.session_dir:
+        finished, service = run(args.session_dir.resolve())
+        print(f"\n\nsession_dir={args.session_dir.resolve()}", end="")
+    else:
+        with tempfile.TemporaryDirectory(prefix="clue_demo_") as tmp:
+            finished, service = run(Path(tmp))
 
     print("\n")
     if not finished:
