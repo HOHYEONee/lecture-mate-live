@@ -1,0 +1,2 @@
+# Dependencies for the PySide6 desktop application.
+PySide6>=6.6,<7

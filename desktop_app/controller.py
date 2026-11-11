@@ -224,11 +224,26 @@ class DesktopController(QObject):
             raise RuntimeError("session cannot stop in its current state")
         self._set_state(SessionState.STOPPING)
         session = self._session
+        question_to_cancel = self._active_question_id
         if session is None:
             self._set_state(SessionState.IDLE)
             return
 
         def stop_and_drain() -> None:
+            if question_to_cancel is not None:
+                try:
+                    self.context_qa.cancel_question(question_to_cancel)
+                except Exception as exc:
+                    self._module_error_received.emit(
+                        ModuleError(
+                            session_id=session.session_id,
+                            module=ModuleName.CONTEXT_QA,
+                            code="question_cancel_failed",
+                            message=str(exc),
+                            recoverable=True,
+                            question_id=question_to_cancel,
+                        )
+                    )
             errors: list[str] = []
             for module in (self.frame_processor, self.audio_processor):
                 try:

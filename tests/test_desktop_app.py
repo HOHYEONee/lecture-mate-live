@@ -7,8 +7,13 @@ import unittest
 from inspect import signature
 from pathlib import Path
 from threading import Event
+import os
 
-from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PySide6.QtCore import QEventLoop, QPoint, QTimer, Qt
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication
 
 from core import SessionManager
 from desktop_app.adapters import (
@@ -20,7 +25,11 @@ from desktop_app.adapters import (
 )
 from desktop_app.controller import DesktopController
 from desktop_app.controller import default_controller
+from desktop_app.main_window import MainWindow
+from desktop_app.region_selector import RegionSelector
 from interface_spec.contracts import (
+    AnswerDelta,
+    AnswerResult,
     AudioProcessorAPI,
     CaptureRegion,
     ContextQAAPI,
@@ -32,7 +41,7 @@ from interface_spec.contracts import (
 class DesktopControllerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.app = QCoreApplication.instance() or QCoreApplication([])
+        cls.app = QApplication.instance() or QApplication([])
 
     def make_controller(self, frame=None, audio=None, context=None):
         directory = tempfile.TemporaryDirectory()
@@ -250,6 +259,114 @@ class DesktopControllerTests(unittest.TestCase):
         self.wait_operation(controller, "start")
         self.assertTrue(entered.is_set())
         self.assertTrue(timer_fired)
+
+    def test_window_controls_and_question_error_state(self) -> None:
+        controller, *_ = self.make_controller()
+        window = MainWindow(controller)
+        self.addCleanup(window.close)
+        window.show()
+        QTest.qWait(20)
+        self.assertFalse(window.start_button.isEnabled())
+        window._region_selected(CaptureRegion(0, 0, 640, 480))
+        self.assertTrue(window.start_button.isEnabled())
+
+        QTest.mouseClick(window.start_button, Qt.MouseButton.LeftButton)
+        self.wait_operation(controller, "start")
+        self.assertEqual(window.state_label.text(), "RUNNING")
+        self.assertTrue(window.pause_button.isEnabled())
+
+        QTest.mouseClick(window.pause_button, Qt.MouseButton.LeftButton)
+        self.wait_operation(controller, "pause")
+        self.assertEqual(window.state_label.text(), "PAUSED")
+        QTest.mouseClick(window.resume_button, Qt.MouseButton.LeftButton)
+        self.wait_operation(controller, "resume")
+
+        QTest.keyClicks(window.question_input, "Explain this slide")
+        self.assertIsNotNone(window._draft_id)
+        QTest.mouseClick(window.send_button, Qt.MouseButton.LeftButton)
+        QTest.qWait(40)
+        self.assertIsNone(window._awaiting_question_id)
+        self.assertIn("AI answers are unavailable", window.conversation.toPlainText())
+        self.assertTrue(window.question_input.isEnabled())
+
+        QTest.mouseClick(window.stop_button, Qt.MouseButton.LeftButton)
+        self.wait_operation(controller, "stop")
+        self.assertEqual(window.state_label.text(), "IDLE")
+
+    def test_window_renders_streamed_answer_deltas(self) -> None:
+        class StreamingContext(MockContextQA):
+            def ask_async(self, request) -> None:
+                self.requests.append(request)
+
+        controller, _frame, _audio, context = self.make_controller(context=StreamingContext())
+        window = MainWindow(controller)
+        self.addCleanup(window.close)
+        window.show()
+        window._region_selected(CaptureRegion(0, 0, 640, 480))
+        controller.start_session(CaptureRegion(0, 0, 640, 480), "default")
+        self.wait_operation(controller, "start")
+        QTest.keyClicks(window.question_input, "What is shown?")
+        question_id = window._draft_id
+        QTest.mouseClick(window.send_button, Qt.MouseButton.LeftButton)
+        request = context.requests[0]
+        context.on_answer_event(
+            AnswerDelta(request.session_id, question_id, 0, "This slide shows ")
+        )
+        context.on_answer_event(
+            AnswerDelta(request.session_id, question_id, 1, "a cache hierarchy.")
+        )
+        context.on_answer_event(
+            AnswerResult(
+                request.session_id,
+                question_id,
+                "This slide shows a cache hierarchy.",
+                None,
+                (),
+                (),
+                20,
+                50,
+            )
+        )
+        QTest.qWait(40)
+        transcript = window.conversation.toPlainText()
+        self.assertIn("This slide shows a cache hierarchy.", transcript)
+        self.assertIsNone(window._awaiting_question_id)
+        controller.stop_session()
+        self.wait_operation(controller, "stop")
+
+    def test_drag_selector_emits_capture_region(self) -> None:
+        selector = RegionSelector()
+        self.addCleanup(selector.close)
+        selected = []
+        selector.region_selected.connect(selected.append)
+        selector.show()
+        QTest.qWait(20)
+        start = QPoint(20, 30)
+        end = QPoint(220, 130)
+        expected_start = selector.mapToGlobal(start)
+        QTest.mousePress(selector, Qt.MouseButton.LeftButton, pos=start)
+        QTest.mouseMove(selector, end, delay=10)
+        QTest.mouseRelease(selector, Qt.MouseButton.LeftButton, pos=end)
+        QTest.qWait(20)
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0].left, expected_start.x())
+        self.assertEqual(selected[0].top, expected_start.y())
+        self.assertGreater(selected[0].width, 0)
+        self.assertGreater(selected[0].height, 0)
+
+    def test_stop_requests_cancellation_of_active_question(self) -> None:
+        class PendingContext(MockContextQA):
+            def ask_async(self, request) -> None:
+                self.requests.append(request)
+
+        controller, _frame, _audio, context = self.make_controller(context=PendingContext())
+        controller.start_session(CaptureRegion(0, 0, 640, 480), "default")
+        self.wait_operation(controller, "start")
+        question_id = controller.begin_question()
+        controller.submit_question(question_id, "Question that is still running")
+        controller.stop_session()
+        self.wait_operation(controller, "stop")
+        self.assertEqual(context.cancelled_questions, [question_id])
 
     def test_bounded_queue_reports_full_to_caller_without_dropping_silently(self) -> None:
         from queue import Queue

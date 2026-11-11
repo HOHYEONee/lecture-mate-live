@@ -11,6 +11,7 @@ from typing import cast
 from uuid import uuid4
 
 from interface_spec.contracts import (
+    AnswerFailed,
     AnswerEventCallback,
     AudioProcessorAPI,
     CaptureRegion,
@@ -154,6 +155,7 @@ class MockContextQA:
         self.running = False
         self.received_events: list[IngestEvent] = []
         self.requests: list[QuestionRequest] = []
+        self.cancelled_questions: list[str] = []
 
     def start(
         self,
@@ -174,9 +176,19 @@ class MockContextQA:
         if not self.running:
             raise RuntimeError("context QA module is not running")
         self.requests.append(request)
+        if self.on_answer_event is not None:
+            self.on_answer_event(
+                AnswerFailed(
+                    session_id=request.session_id,
+                    question_id=request.question_id,
+                    code="mock_unavailable",
+                    message="AI answers are unavailable in the temporary adapter.",
+                    elapsed_ms=0,
+                )
+            )
 
     def cancel_question(self, question_id: str) -> None:
-        del question_id  # The mock does not generate answers to cancel.
+        self.cancelled_questions.append(question_id)
 
     def drain_and_stop(self) -> None:
         if self.input_queue is None:
