@@ -91,6 +91,7 @@ class FakeLLM:
         self.error = error
         self.fail_after_chunks = fail_after_chunks
         self.hold = hold
+        self.model = "fake-llm"
         self.requests: list[LLMRequest] = []
 
     def stream(self, request: LLMRequest) -> LLMStream:

@@ -4,11 +4,14 @@ import json
 import sqlite3
 from array import array
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from threading import RLock
 from typing import Iterable
 
 from interface_spec.contracts import (
+    AnswerCancelled,
+    AnswerFailed,
     AnswerResult,
     FrameDecision,
     FrameRecord,
@@ -61,6 +64,7 @@ CREATE TABLE IF NOT EXISTS questions (
     submitted_ms INTEGER NOT NULL,
     input_capture_seq INTEGER NOT NULL,
     submit_capture_seq INTEGER NOT NULL,
+    question_type TEXT,
     PRIMARY KEY (session_id, question_id)
 );
 CREATE TABLE IF NOT EXISTS answers (
@@ -72,6 +76,12 @@ CREATE TABLE IF NOT EXISTS answers (
     used_segment_ids TEXT NOT NULL,
     first_response_latency_ms INTEGER,
     elapsed_ms INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'completed',
+    error_code TEXT,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    model TEXT,
+    strategy TEXT,
     PRIMARY KEY (session_id, question_id)
 );
 CREATE TABLE IF NOT EXISTS text_chunks (
@@ -92,6 +102,18 @@ CREATE TABLE IF NOT EXISTS chunk_embeddings (
     PRIMARY KEY (session_id, chunk_id)
 );
 """
+
+ADDED_COLUMNS = {
+    "questions": (("question_type", "TEXT"),),
+    "answers": (
+        ("status", "TEXT NOT NULL DEFAULT 'completed'"),
+        ("error_code", "TEXT"),
+        ("input_tokens", "INTEGER"),
+        ("output_tokens", "INTEGER"),
+        ("model", "TEXT"),
+        ("strategy", "TEXT"),
+    ),
+}
 
 TABLES = (
     "frames",
@@ -126,6 +148,32 @@ class FrameObservation:
     group_id: str | None
 
 
+class AnswerStatus(StrEnum):
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True, slots=True)
+class AnswerRecord:
+    question_id: str
+    question: str | None
+    question_type: str | None
+    submitted_ms: int | None
+    status: AnswerStatus
+    answer: str
+    error_code: str | None
+    context_tag: int | None
+    used_frame_ids: tuple[str, ...]
+    used_segment_ids: tuple[str, ...]
+    first_response_latency_ms: int | None
+    elapsed_ms: int
+    input_tokens: int | None
+    output_tokens: int | None
+    model: str | None
+    strategy: str | None
+
+
 @dataclass(frozen=True, slots=True)
 class QAPair:
     question_id: str
@@ -143,7 +191,15 @@ class ContextStore:
         if str(db_path) != ":memory:":
             self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(SCHEMA)
+        self._migrate()
         self._conn.commit()
+
+    def _migrate(self) -> None:
+        for table, columns in ADDED_COLUMNS.items():
+            existing = {row[1] for row in self._conn.execute(f"PRAGMA table_info({table})")}
+            for name, decl in columns:
+                if name not in existing:
+                    self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
     def __enter__(self) -> ContextStore:
         return self
@@ -230,13 +286,15 @@ class ContextStore:
         )
         return cur.rowcount == 1
 
-    def add_question(self, request: QuestionRequest) -> bool:
+    def add_question(self, request: QuestionRequest, question_type: str | None = None) -> bool:
         self._check_session(request.session_id)
         with self._lock, self._conn:
             self._insert_frame(request.input_frame)
             self._insert_frame(request.submit_frame)
             cur = self._conn.execute(
-                "INSERT OR IGNORE INTO questions VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO questions (session_id, question_id, text, input_started_ms, "
+                "submitted_ms, input_capture_seq, submit_capture_seq, question_type) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     request.session_id,
                     request.question_id,
@@ -245,24 +303,58 @@ class ContextStore:
                     request.submitted_ms,
                     request.input_frame.capture_seq,
                     request.submit_frame.capture_seq,
+                    question_type,
                 ),
             )
             return cur.rowcount == 1
 
-    def add_answer(self, result: AnswerResult) -> bool:
-        self._check_session(result.session_id)
+    def add_answer(
+        self,
+        event: AnswerResult | AnswerCancelled | AnswerFailed,
+        *,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        model: str | None = None,
+        strategy: str | None = None,
+    ) -> bool:
+        self._check_session(event.session_id)
+        context_tag = None
+        frame_ids: tuple[str, ...] = ()
+        segment_ids: tuple[str, ...] = ()
+        first_latency = None
+        error_code = None
+        if isinstance(event, AnswerResult):
+            status, text = AnswerStatus.COMPLETED, event.answer
+            context_tag = event.context_tag
+            frame_ids, segment_ids = event.used_frame_ids, event.used_segment_ids
+            first_latency = event.first_response_latency_ms
+        elif isinstance(event, AnswerCancelled):
+            status, text = AnswerStatus.CANCELLED, event.partial_answer
+        elif isinstance(event, AnswerFailed):
+            status, text, error_code = AnswerStatus.FAILED, "", event.code
+        else:
+            raise TypeError(f"unsupported answer event: {type(event).__name__}")
         with self._lock, self._conn:
             cur = self._conn.execute(
-                "INSERT OR IGNORE INTO answers VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO answers (session_id, question_id, answer, context_tag, "
+                "used_frame_ids, used_segment_ids, first_response_latency_ms, elapsed_ms, "
+                "status, error_code, input_tokens, output_tokens, model, strategy) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    result.session_id,
-                    result.question_id,
-                    result.answer,
-                    result.context_tag,
-                    json.dumps(list(result.used_frame_ids)),
-                    json.dumps(list(result.used_segment_ids)),
-                    result.first_response_latency_ms,
-                    result.elapsed_ms,
+                    event.session_id,
+                    event.question_id,
+                    text,
+                    context_tag,
+                    json.dumps(list(frame_ids)),
+                    json.dumps(list(segment_ids)),
+                    first_latency,
+                    event.elapsed_ms,
+                    status.value,
+                    error_code,
+                    input_tokens,
+                    output_tokens,
+                    model,
+                    strategy,
                 ),
             )
             return cur.rowcount == 1
@@ -378,10 +470,43 @@ class ContextStore:
                 "SELECT q.question_id, q.text, a.answer, a.context_tag, q.submitted_ms "
                 "FROM answers a JOIN questions q "
                 "ON q.session_id = a.session_id AND q.question_id = a.question_id "
-                "WHERE a.session_id = ? ORDER BY q.submitted_ms DESC LIMIT ?",
-                (self.session_id, limit),
+                "WHERE a.session_id = ? AND a.status = ? ORDER BY q.submitted_ms DESC LIMIT ?",
+                (self.session_id, AnswerStatus.COMPLETED.value, limit),
             ).fetchall()
         return tuple(QAPair(*r) for r in reversed(rows))
+
+    def answer_records(self) -> tuple[AnswerRecord, ...]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT a.question_id, q.text, q.question_type, q.submitted_ms, a.status, a.answer, "
+                "a.error_code, a.context_tag, a.used_frame_ids, a.used_segment_ids, "
+                "a.first_response_latency_ms, a.elapsed_ms, a.input_tokens, a.output_tokens, "
+                "a.model, a.strategy FROM answers a LEFT JOIN questions q "
+                "ON q.session_id = a.session_id AND q.question_id = a.question_id "
+                "WHERE a.session_id = ? ORDER BY q.submitted_ms, a.question_id",
+                (self.session_id,),
+            ).fetchall()
+        return tuple(
+            AnswerRecord(
+                question_id=r[0],
+                question=r[1],
+                question_type=r[2],
+                submitted_ms=r[3],
+                status=AnswerStatus(r[4]),
+                answer=r[5],
+                error_code=r[6],
+                context_tag=r[7],
+                used_frame_ids=tuple(json.loads(r[8])),
+                used_segment_ids=tuple(json.loads(r[9])),
+                first_response_latency_ms=r[10],
+                elapsed_ms=r[11],
+                input_tokens=r[12],
+                output_tokens=r[13],
+                model=r[14],
+                strategy=r[15],
+            )
+            for r in rows
+        )
 
     def load_chunks(self) -> tuple[RAGChunkRecord, ...]:
         with self._lock:
