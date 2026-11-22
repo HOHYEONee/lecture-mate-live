@@ -175,6 +175,12 @@ class AnswerRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class IngestResult:
+    saved: int
+    new_transcripts: tuple[TranscriptSegment, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class QAPair:
     question_id: str
     question: str
@@ -216,22 +222,24 @@ class ContextStore:
             raise ValueError(f"session mismatch: {session_id!r} != {self.session_id!r}")
 
     def add_event(self, event: IngestEvent) -> bool:
-        return self.add_events((event,)) == 1
+        return self.add_events((event,)).saved == 1
 
-    def add_events(self, events: Iterable[IngestEvent]) -> int:
+    def add_events(self, events: Iterable[IngestEvent]) -> IngestResult:
         events = tuple(events)
         for event in events:
             if not isinstance(event, (FrameRecord, TranscriptSegment)):
                 raise TypeError(f"unsupported ingest event: {type(event).__name__}")
             self._check_session(event.session_id)
         inserted = 0
+        new_transcripts: list[TranscriptSegment] = []
         with self._lock, self._conn:
             for event in events:
                 if isinstance(event, FrameRecord):
                     inserted += self._insert_frame(event)
-                else:
-                    inserted += self._insert_transcript(event)
-        return inserted
+                elif self._insert_transcript(event):
+                    inserted += 1
+                    new_transcripts.append(event)
+        return IngestResult(inserted, tuple(new_transcripts))
 
     def add_frame(self, record: FrameRecord) -> bool:
         self._check_session(record.session_id)

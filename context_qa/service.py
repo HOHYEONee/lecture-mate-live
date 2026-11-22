@@ -19,6 +19,8 @@ from interface_spec.contracts import (
     ModuleError,
     ModuleName,
     QuestionRequest,
+    RAGIndexAPI,
+    TranscriptSegment,
 )
 
 from .llm import LLMClient, LLMError, LLMStream, OpenAIClient, Usage
@@ -50,8 +52,13 @@ class ContextQAService:
         poll_timeout_s: float = 0.2,
         stop_timeout_s: float = 5.0,
         strategy: str = "minimal",
+        rag: RAGIndexAPI | None = None,
     ) -> None:
         self._llm = llm
+        self._rag = rag
+        self._rag_active = False
+        self._rag_queue: Queue[TranscriptSegment | None] | None = None
+        self._rag_thread: threading.Thread | None = None
         self._strategy = strategy
         self._recent_window_ms = recent_window_ms
         self._batch_size = batch_size
@@ -74,6 +81,10 @@ class ContextQAService:
     def store(self) -> ContextStore | None:
         return self._store
 
+    @property
+    def rag(self) -> RAGIndexAPI | None:
+        return self._rag if self._rag_active else None
+
     def start(
         self,
         session_id: str,
@@ -91,6 +102,7 @@ class ContextQAService:
         self._on_answer_event = on_answer_event
         self._on_error = on_error
         self._stopping.clear()
+        self._start_rag(session_id)
         self._ingest_thread = threading.Thread(
             target=self._ingest_loop, name="context-qa-ingest", daemon=True
         )
@@ -137,19 +149,89 @@ class ContextQAService:
         if self._ingest_thread is None:
             return
         self._stopping.set()
-        self._ingest_thread.join()
-        with self._qa_lock:
-            active = self._active
-            qa_thread = self._qa_thread
-        if active is not None:
-            self.cancel_question(active.request.question_id)
-        if qa_thread is not None:
-            qa_thread.join(timeout=self._stop_timeout_s)
-        if active is not None and active.registered and active.terminal is not None:
-            self._record(active, active.terminal)
-        self._ingest_thread = None
-        if self._store is not None:
-            self._store.close()
+        try:
+            self._ingest_thread.join()
+            self._stop_rag()
+            with self._qa_lock:
+                active = self._active
+                qa_thread = self._qa_thread
+            if active is not None:
+                self.cancel_question(active.request.question_id)
+            if qa_thread is not None:
+                qa_thread.join(timeout=self._stop_timeout_s)
+            if active is not None and active.registered and active.terminal is not None:
+                self._record(active, active.terminal)
+        finally:
+            self._ingest_thread = None
+            if self._store is not None:
+                self._store.close()
+
+    def _start_rag(self, session_id: str) -> None:
+        self._rag_active = False
+        self._rag_queue = None
+        self._rag_thread = None
+        if self._rag is None:
+            return
+        assert self._store is not None
+        try:
+            restored = self._store.load_chunks()
+            try:
+                self._rag.start(session_id, restored)
+            except ValueError as exc:
+                self._report("rag_restore_failed", f"{len(restored)} chunks not restored: {exc}", True)
+                self._rag.start(session_id, ())
+        except Exception as exc:
+            self._report("rag_start_failed", f"{type(exc).__name__}: {exc}", True)
+            return
+        self._rag_active = True
+        self._rag_queue = Queue()
+        self._rag_thread = threading.Thread(
+            target=self._rag_loop, name="context-qa-rag", daemon=True
+        )
+        self._rag_thread.start()
+
+    def _rag_loop(self) -> None:
+        assert self._rag_queue is not None and self._rag is not None
+        while True:
+            segment = self._rag_queue.get()
+            if segment is None:
+                return
+            try:
+                chunks = self._rag.index_transcript(segment)
+            except Exception as exc:
+                self._report(
+                    "rag_index_failed",
+                    f"segment_id={segment.segment_id}: {type(exc).__name__}: {exc}",
+                    True,
+                )
+                continue
+            self._save_chunks(chunks)
+
+    def _save_chunks(self, chunks: tuple) -> None:
+        if not chunks:
+            return
+        assert self._store is not None
+        try:
+            self._store.add_chunks(chunks)
+        except Exception as exc:
+            ids = ", ".join(c.chunk_id for c in chunks)
+            self._report("db_write_failed", f"chunks {ids}: {exc}", recoverable=False)
+
+    def _stop_rag(self) -> None:
+        if not self._rag_active or self._rag is None:
+            return
+        self._rag_active = False
+        assert self._rag_queue is not None and self._rag_thread is not None
+        self._rag_queue.put(None)
+        self._rag_thread.join()
+        try:
+            self._save_chunks(self._rag.flush_pending())
+        except Exception as exc:
+            self._report("rag_flush_failed", f"{type(exc).__name__}: {exc}", True)
+        try:
+            self._rag.stop()
+        except Exception as exc:
+            self._report("rag_stop_failed", f"{type(exc).__name__}: {exc}", True)
 
     def _answer(self, task: _QuestionTask) -> None:
         request = task.request
@@ -282,19 +364,28 @@ class ContextQAService:
     def _write_batch(self, batch: list[IngestEvent]) -> None:
         assert self._store is not None
         try:
-            self._store.add_events(batch)
-            return
+            result = self._store.add_events(batch)
         except Exception:
             pass
+        else:
+            self._enqueue_rag(result.new_transcripts)
+            return
         for event in batch:
             try:
-                self._store.add_event(event)
+                if self._store.add_event(event) and isinstance(event, TranscriptSegment):
+                    self._enqueue_rag((event,))
             except Exception as exc:
                 self._report(
                     "db_write_failed",
                     f"{type(event).__name__} {_event_id(event)}: {exc}",
                     recoverable=False,
                 )
+
+    def _enqueue_rag(self, segments: tuple[TranscriptSegment, ...]) -> None:
+        if not self._rag_active or self._rag_queue is None:
+            return
+        for segment in segments:
+            self._rag_queue.put(segment)
 
     def _report(
         self,
