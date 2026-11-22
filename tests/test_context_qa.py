@@ -276,7 +276,7 @@ class PromptTests(unittest.TestCase):
         self.assertEqual(texts[1], "[질문 시작 화면, 02:03] (이미지 없음)")
         self.assertEqual(texts[2], "[제출 화면, 02:05]")
         self.assertIsInstance(bundle.request.parts[3], ImagePart)
-        self.assertTrue(texts[-1].endswith("이거 뭐야?"))
+        self.assertIn("이거 뭐야?", texts[-1])
         self.assertIn("일반 지식", bundle.request.instructions)
         self.assertEqual(bundle.frame_ids, ("q1_sub",))
         self.assertEqual(bundle.segment_ids, ("t1",))

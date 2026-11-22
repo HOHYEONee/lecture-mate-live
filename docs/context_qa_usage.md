@@ -106,7 +106,7 @@ qa.ask_async(request)    # QuestionRequest, 즉시 반환
 
 - 이벤트마다 `question_id`가 있습니다. 현재 질문과 다른 ID의 이벤트는 무시하면 됩니다.
 - `AnswerResult.first_response_latency_ms`·`elapsed_ms`는 실제 경과 시간(ms)입니다. 세션 일시정지와 관계없이 측정됩니다.
-- `AnswerResult.context_tag`는 현재 항상 `None`입니다 (연속 대화 기능은 2단계).
+- `AnswerResult.context_tag`는 대화 주제 번호(1부터)입니다. 같은 번호는 같은 주제의 후속 질문입니다. 모델이 답변 끝에 붙인 `<tag>N</tag>`는 모듈이 떼어 내므로 `AnswerDelta`와 `answer`에는 나오지 않습니다.
 
 ### `AnswerFailed.code`
 

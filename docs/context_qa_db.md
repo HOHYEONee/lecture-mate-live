@@ -92,7 +92,7 @@ erDiagram
 | `submitted_ms` | INTEGER | 아니오 |  | 제출 시각. 이 시각 이후 자료는 답변에 쓰지 않음 |
 | `input_capture_seq` | INTEGER | 아니오 |  | 질문 시작 스냅샷의 `frame_history.capture_seq` |
 | `submit_capture_seq` | INTEGER | 아니오 |  | 제출 스냅샷의 `frame_history.capture_seq` |
-| `question_type` | TEXT | 예 |  | `current_visual` / `past` / `general` 등 분류 결과 (자동 추가 열) |
+| `question_type` | TEXT | 예 |  | `current_visual` / `past` / `past_visual` / `dispute_answer` / `dispute_lecture` / `general` (자동 추가 열) |
 
 ### `answers`
 
@@ -106,7 +106,7 @@ erDiagram
 | `session_id` **PK** | TEXT | 아니오 |  | 세션 ID |
 | `question_id` **PK** | TEXT | 아니오 |  | `questions.question_id` |
 | `answer` | TEXT | 아니오 |  | 완료 답변 또는 취소 시 부분 답변, 실패 시 빈 문자열 |
-| `context_tag` | INTEGER | 예 |  | 연속 대화 태그(P1 예정) |
+| `context_tag` | INTEGER | 예 |  | 대화 주제 번호(1부터). 같은 번호끼리 이전 대화로 묶음 |
 | `used_frame_ids` | TEXT | 아니오 |  | 모델에 보낸 이미지 `frame_id` JSON 배열(보낸 순서) |
 | `used_segment_ids` | TEXT | 아니오 |  | 모델에 보낸 전사 `segment_id` JSON 배열 |
 | `first_response_latency_ms` | INTEGER | 예 |  | 첫 조각까지 걸린 시간 |

@@ -22,6 +22,7 @@ VISUAL_POOL = 20
 RAG_TOP_K = 5
 QA_HISTORY = 5
 DISPUTE_QA_HISTORY = 20
+MAX_QA_HISTORY = 20
 PAST_VISUAL_FRAMES = 3
 RAG_TYPES = frozenset({QuestionType.PAST, QuestionType.PAST_VISUAL, QuestionType.DISPUTE_LECTURE})
 
@@ -49,6 +50,7 @@ class ContextSelection:
     t_star_ms: int | None
     qa_history: tuple[QAPair, ...]
     notes: tuple[str, ...] = ()
+    next_tag: int = 1
 
     @property
     def frames(self) -> tuple[StoredFrame, ...]:
@@ -86,7 +88,12 @@ def select(
     since = until - recent_window_ms
     recent_transcripts = store.transcripts_between(since if since > 0 else None, until)
     history_limit = DISPUTE_QA_HISTORY if question_type == QuestionType.DISPUTE_ANSWER else QA_HISTORY
-    qa_history = store.recent_qa(history_limit, until_ms=until)
+    recent_qa = store.recent_qa(history_limit, until_ms=until)
+    tags = {p.context_tag for p in recent_qa if p.context_tag is not None}
+    merged = {p.question_id: p for p in store.qa_by_tags(tags, until_ms=until, limit=MAX_QA_HISTORY)}
+    merged.update((p.question_id, p) for p in recent_qa)
+    qa_history = tuple(sorted(merged.values(), key=lambda p: (p.submitted_ms, p.question_id))[-MAX_QA_HISTORY:])
+    next_tag = store.max_context_tag(until_ms=until) + 1
     notes: list[str] = []
 
     past_frames: tuple[StoredFrame, ...] = ()
@@ -133,6 +140,7 @@ def select(
         t_star_ms=t_star,
         qa_history=qa_history,
         notes=tuple(notes),
+        next_tag=next_tag,
     )
 
 

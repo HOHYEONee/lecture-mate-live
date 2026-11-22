@@ -509,6 +509,42 @@ class ContextStore:
             rows = self._conn.execute(sql, params).fetchall()
         return tuple(QAPair(*r) for r in reversed(rows))
 
+    def qa_by_tags(
+        self, tags: Iterable[int], until_ms: int | None = None, limit: int = 20
+    ) -> tuple[QAPair, ...]:
+        tags = sorted({int(t) for t in tags})
+        if not tags:
+            return ()
+        sql = (
+            "SELECT q.question_id, q.text, a.answer, a.context_tag, q.submitted_ms "
+            "FROM answers a JOIN questions q "
+            "ON q.session_id = a.session_id AND q.question_id = a.question_id "
+            f"WHERE a.session_id = ? AND a.status = ? AND a.context_tag IN ({','.join('?' * len(tags))})"
+        )
+        params: list[object] = [self.session_id, AnswerStatus.COMPLETED.value, *tags]
+        if until_ms is not None:
+            sql += " AND q.submitted_ms < ?"
+            params.append(until_ms)
+        sql += " ORDER BY q.submitted_ms DESC LIMIT ?"
+        params.append(limit)
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return tuple(QAPair(*r) for r in reversed(rows))
+
+    def max_context_tag(self, until_ms: int | None = None) -> int:
+        sql = (
+            "SELECT MAX(a.context_tag) FROM answers a JOIN questions q "
+            "ON q.session_id = a.session_id AND q.question_id = a.question_id "
+            "WHERE a.session_id = ?"
+        )
+        params: list[object] = [self.session_id]
+        if until_ms is not None:
+            sql += " AND q.submitted_ms < ?"
+            params.append(until_ms)
+        with self._lock:
+            row = self._conn.execute(sql, params).fetchone()
+        return row[0] or 0
+
     def answer_records(self) -> tuple[AnswerRecord, ...]:
         with self._lock:
             rows = self._conn.execute(

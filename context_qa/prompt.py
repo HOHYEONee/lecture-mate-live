@@ -28,7 +28,12 @@ INSTRUCTIONS = """당신은 온라인 강의를 듣는 학생을 돕는 학습 �
 
 반박 질문 규칙:
 - 학생이 이전 답변과 다르다고 지적하면 이전 대화와 강의 근거를 다시 확인하고, 이전 답변이 틀렸으면 분명히 인정하고 바로잡습니다.
-- 학생이 교수자의 설명을 근거로 반박하면 관련 과거 전사에서 교수자가 실제로 한 말을 먼저 확인하고, 교수자 설명과 일반 지식을 구분해 답합니다."""
+- 학생이 교수자의 설명을 근거로 반박하면 관련 과거 전사에서 교수자가 실제로 한 말을 먼저 확인하고, 교수자 설명과 일반 지식을 구분해 답합니다.
+
+대화 태그 규칙:
+- 이전 대화는 [대화 N]으로 주제 번호가 붙어 있습니다.
+- 이번 질문이 이전 대화 N의 후속 질문이면 그 대화를 이어서 답합니다. 다른 주제의 이전 대화는 참고만 합니다.
+- 답변 맨 끝에 주제 번호를 <tag>N</tag> 형식으로 한 번만 붙입니다. 이전 대화의 후속이면 그 번호, 새 주제면 질문 아래에 안내된 새 번호를 씁니다."""
 
 QA_SUMMARY_CHARS = 400
 
@@ -95,12 +100,16 @@ def build_prompt(
     if selection.qa_history:
         lines = []
         for pair in selection.qa_history:
-            lines.append(f"[{format_ms(pair.submitted_ms)}] 질문: {pair.question.strip()}")
+            tag = f"[대화 {pair.context_tag}] " if pair.context_tag is not None else ""
+            lines.append(f"{tag}[{format_ms(pair.submitted_ms)}] 질문: {pair.question.strip()}")
             lines.append(f"답변: {_truncate(pair.answer.strip(), QA_SUMMARY_CHARS)}")
         parts.append(TextPart("## 이전 대화\n" + "\n".join(lines)))
 
     parts.append(
-        TextPart(f"## 학생 질문 (제출 시각 {format_ms(request.submitted_ms)})\n{request.text.strip()}")
+        TextPart(
+            f"## 학생 질문 (제출 시각 {format_ms(request.submitted_ms)})\n{request.text.strip()}\n\n"
+            f"(새 주제 번호: {selection.next_tag})"
+        )
     )
     return PromptBundle(
         request=LLMRequest(instructions=INSTRUCTIONS, parts=tuple(parts)),

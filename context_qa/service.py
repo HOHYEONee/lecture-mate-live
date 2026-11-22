@@ -28,6 +28,7 @@ from .llm import LLMClient, LLMError, LLMStream, OpenAIClient, Usage
 from .prompt import PromptBundle, build_prompt
 from .selector import ContextSelection, select
 from .store import ContextStore
+from .tagfilter import TagFilter
 
 
 @dataclass(eq=False, slots=True)
@@ -270,24 +271,34 @@ class ContextQAService:
             if self._llm is None:
                 self._llm = OpenAIClient()
             stream = self._llm.stream(bundle.request)
+            tags = TagFilter()
             first_latency: int | None = None
-            for text in stream:
-                if not text:
-                    continue
+
+            def deliver(text: str) -> bool:
+                nonlocal first_latency
                 with self._qa_lock:
                     if task.done:
-                        return
+                        return False
+                    if not text:
+                        return True
                     if first_latency is None:
                         first_latency = task.elapsed_ms()
                     index = len(task.parts)
                     task.parts.append(text)
                     self._emit(AnswerDelta(request.session_id, request.question_id, index, text))
+                    return True
+
+            for text in stream:
+                if text and not deliver(tags.feed(text)):
+                    return
+            if not deliver(tags.finish()):
+                return
             task.usage = stream.usage
             result = AnswerResult(
                 session_id=request.session_id,
                 question_id=request.question_id,
-                answer="".join(task.parts),
-                context_tag=None,
+                answer="".join(task.parts).rstrip(),
+                context_tag=_resolve_tag(tags.tag, selection.next_tag),
                 used_frame_ids=bundle.frame_ids,
                 used_segment_ids=bundle.segment_ids,
                 first_response_latency_ms=first_latency,
@@ -431,6 +442,12 @@ class ContextQAService:
             )
         except Exception:
             pass
+
+
+def _resolve_tag(tag: int | None, next_tag: int) -> int:
+    if tag is None or tag < 1 or tag > next_tag:
+        return next_tag
+    return tag
 
 
 def _failed(task: _QuestionTask, code: str, message: str) -> AnswerFailed:
