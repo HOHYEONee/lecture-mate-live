@@ -456,6 +456,26 @@ class ContextStore:
             ).fetchall()
         return tuple(_stored_frame(r) for r in reversed(rows))
 
+    def representative_frames_between(
+        self, since_ms: int | None, until_ms: int, limit: int | None = None
+    ) -> tuple[StoredFrame, ...]:
+        sql = (
+            "SELECT frame_id, image_path, frame_type, source, decision, group_id, "
+            "first_capture_seq, first_timestamp_ms FROM frames "
+            "WHERE session_id = ? AND source = ? AND first_timestamp_ms <= ?"
+        )
+        params: list[object] = [self.session_id, FrameSource.PERIODIC.value, until_ms]
+        if since_ms is not None:
+            sql += " AND first_timestamp_ms > ?"
+            params.append(since_ms)
+        sql += " ORDER BY first_timestamp_ms DESC, first_capture_seq DESC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return tuple(_stored_frame(r) for r in reversed(rows))
+
     def transcripts_between(
         self, since_ms: int | None, until_ms: int
     ) -> tuple[TranscriptSegment, ...]:
@@ -472,15 +492,21 @@ class ContextStore:
             rows = self._conn.execute(sql, params).fetchall()
         return tuple(TranscriptSegment(*r) for r in rows)
 
-    def recent_qa(self, limit: int = 5) -> tuple[QAPair, ...]:
+    def recent_qa(self, limit: int = 5, until_ms: int | None = None) -> tuple[QAPair, ...]:
+        sql = (
+            "SELECT q.question_id, q.text, a.answer, a.context_tag, q.submitted_ms "
+            "FROM answers a JOIN questions q "
+            "ON q.session_id = a.session_id AND q.question_id = a.question_id "
+            "WHERE a.session_id = ? AND a.status = ?"
+        )
+        params: list[object] = [self.session_id, AnswerStatus.COMPLETED.value]
+        if until_ms is not None:
+            sql += " AND q.submitted_ms < ?"
+            params.append(until_ms)
+        sql += " ORDER BY q.submitted_ms DESC LIMIT ?"
+        params.append(limit)
         with self._lock:
-            rows = self._conn.execute(
-                "SELECT q.question_id, q.text, a.answer, a.context_tag, q.submitted_ms "
-                "FROM answers a JOIN questions q "
-                "ON q.session_id = a.session_id AND q.question_id = a.question_id "
-                "WHERE a.session_id = ? AND a.status = ? ORDER BY q.submitted_ms DESC LIMIT ?",
-                (self.session_id, AnswerStatus.COMPLETED.value, limit),
-            ).fetchall()
+            rows = self._conn.execute(sql, params).fetchall()
         return tuple(QAPair(*r) for r in reversed(rows))
 
     def answer_records(self) -> tuple[AnswerRecord, ...]:

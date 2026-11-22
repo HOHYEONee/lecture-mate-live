@@ -23,8 +23,10 @@ from interface_spec.contracts import (
     TranscriptSegment,
 )
 
+from .classifier import classify
 from .llm import LLMClient, LLMError, LLMStream, OpenAIClient, Usage
-from .prompt import build_prompt
+from .prompt import PromptBundle, build_prompt
+from .selector import ContextSelection, select
 from .store import ContextStore
 
 
@@ -51,10 +53,14 @@ class ContextQAService:
         batch_size: int = 100,
         poll_timeout_s: float = 0.2,
         stop_timeout_s: float = 5.0,
-        strategy: str = "minimal",
+        strategy: str = "full",
         rag: RAGIndexAPI | None = None,
+        max_frames: int = 8,
     ) -> None:
         self._llm = llm
+        self._max_frames = max_frames
+        self.last_selection: ContextSelection | None = None
+        self.last_prompt: PromptBundle | None = None
         self._rag = rag
         self._rag_active = False
         self._rag_queue: Queue[TranscriptSegment | None] | None = None
@@ -194,18 +200,26 @@ class ContextQAService:
         assert self._rag_queue is not None and self._rag is not None
         while True:
             segment = self._rag_queue.get()
-            if segment is None:
-                return
             try:
-                chunks = self._rag.index_transcript(segment)
-            except Exception as exc:
-                self._report(
-                    "rag_index_failed",
-                    f"segment_id={segment.segment_id}: {type(exc).__name__}: {exc}",
-                    True,
-                )
-                continue
-            self._save_chunks(chunks)
+                if segment is None:
+                    return
+                try:
+                    chunks = self._rag.index_transcript(segment)
+                except Exception as exc:
+                    self._report(
+                        "rag_index_failed",
+                        f"segment_id={segment.segment_id}: {type(exc).__name__}: {exc}",
+                        True,
+                    )
+                    continue
+                self._save_chunks(chunks)
+            finally:
+                self._rag_queue.task_done()
+
+    def wait_rag_idle(self) -> None:
+        queue = self._rag_queue
+        if self._rag_active and queue is not None:
+            queue.join()
 
     def _save_chunks(self, chunks: tuple) -> None:
         if not chunks:
@@ -238,13 +252,20 @@ class ContextQAService:
         stream: LLMStream | None = None
         try:
             assert self._store is not None and self._session_dir is not None
-            self._store.add_question(request)
+            question_type = classify(request.text)
+            self._store.add_question(request, question_type=question_type.value)
             task.registered = True
-            since = request.submitted_ms - self._recent_window_ms
-            transcripts = self._store.transcripts_between(
-                since if since > 0 else None, request.submitted_ms
+            selection = select(
+                request,
+                question_type,
+                self._store,
+                self.rag,
+                max_frames=self._max_frames,
+                recent_window_ms=self._recent_window_ms,
             )
-            bundle = build_prompt(request, transcripts, self._session_dir)
+            bundle = build_prompt(request, selection, self._session_dir)
+            self.last_selection = selection
+            self.last_prompt = bundle
             if self._llm is None:
                 self._llm = OpenAIClient()
             stream = self._llm.stream(bundle.request)

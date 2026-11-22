@@ -149,7 +149,7 @@ class AnswerFlowTests(QATestBase):
         self.assertEqual([(p.question_id, p.answer) for p in qa], [("q1", self.llm.text)])
         record = store.answer_records()[0]
         self.assertEqual(record.status, AnswerStatus.COMPLETED)
-        self.assertEqual((record.model, record.strategy), ("fake-llm", "minimal"))
+        self.assertEqual((record.model, record.strategy), ("fake-llm", "full"))
         usage = self.service.last_usage
         assert usage is not None
         self.assertEqual((record.input_tokens, record.output_tokens), (usage.input_tokens, usage.output_tokens))

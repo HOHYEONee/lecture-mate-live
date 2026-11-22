@@ -10,7 +10,8 @@ import time
 from pathlib import Path
 from queue import Queue
 
-from context_qa import ContextQAService, FakeLLM, LLMError, OpenAIClient
+from context_qa import ContextQAService, FakeLLM, FakeRAG, LLMError, OpenAIClient
+from context_qa.llm import ImagePart
 from interface_spec.contracts import (
     AnswerCancelled,
     AnswerDelta,
@@ -64,6 +65,24 @@ def snapshot(seq: int, ms: int, frame_id: str, source: FrameSource, image: Path,
     )
 
 
+def dump_prompt(service: ContextQAService) -> None:
+    bundle, selection = service.last_prompt, service.last_selection
+    if bundle is None or selection is None:
+        print("(no prompt built)")
+        return
+    print("===== prompt =====")
+    print(f"question_type={selection.question_type.value} t_star={selection.t_star_ms} notes={list(selection.notes)}")
+    print("----- instructions -----")
+    print(bundle.request.instructions)
+    print("----- parts -----")
+    for part in bundle.request.parts:
+        if isinstance(part, ImagePart):
+            print(f"<image {part.path}>")
+        else:
+            print(part.text)
+    print("===== end prompt =====\n")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="CLUE context_qa demo")
     parser.add_argument("--start-image", type=Path, required=True)
@@ -75,6 +94,8 @@ def main() -> int:
     parser.add_argument("--effort")
     parser.add_argument("--fake", action="store_true")
     parser.add_argument("--session-dir", type=Path, help="keep metadata.db and frames here (default: temporary)")
+    parser.add_argument("--rag", choices=("fake", "none"), default="fake")
+    parser.add_argument("--dump-prompt", action="store_true", help="print the prompt sent to the model (images as paths)")
     args = parser.parse_args()
     for flag, path in (("--start-image", args.start_image), ("--submit-image", args.submit_image), ("--transcript", args.transcript)):
         if not path.is_file():
@@ -116,11 +137,12 @@ def main() -> int:
         )
 
         queue: Queue = Queue(maxsize=1000)
-        service = ContextQAService(llm=llm)
+        service = ContextQAService(llm=llm, rag=FakeRAG() if args.rag == "fake" else None)
         service.start(SESSION_ID, str(session_dir), queue, on_event, errors.append)
         for segment in segments:
             queue.put(segment)
         queue.join()
+        service.wait_rag_idle()
 
         print(f"model={llm.model} question_id={qid} transcripts={len(segments)} submitted={args.submitted or submitted_ms // 1000}s\n")
         service.ask_async(request)
@@ -136,6 +158,8 @@ def main() -> int:
             finished, service = run(Path(tmp))
 
     print("\n")
+    if args.dump_prompt:
+        dump_prompt(service)
     if not finished:
         print("timeout: no terminal event within 180s")
         return 1
