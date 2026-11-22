@@ -61,6 +61,7 @@ class ContextQAService:
         self._max_frames = max_frames
         self.last_selection: ContextSelection | None = None
         self.last_prompt: PromptBundle | None = None
+        self.startup_notes: tuple[str, ...] = ()
         self._rag = rag
         self._rag_active = False
         self._rag_queue: Queue[TranscriptSegment | None] | None = None

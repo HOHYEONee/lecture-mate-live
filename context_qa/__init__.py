@@ -1,4 +1,5 @@
 from .classifier import QuestionType, classify
+from .factory import create_context_qa
 from .fakes import FakeEmbedder, FakeRAG
 from .selector import ContextSelection, select
 from .llm import FakeLLM, LLMClient, LLMError, LLMRequest, OpenAIClient, Usage
@@ -35,6 +36,7 @@ __all__ = [
     "Usage",
     "build_prompt",
     "classify",
+    "create_context_qa",
     "format_ms",
     "select",
 ]
