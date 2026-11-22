@@ -29,7 +29,8 @@ def parse_region(value: str | None) -> CaptureRegion:
         return CaptureRegion(left, top, width, height)
     import mss
 
-    with mss.mss() as screen:
+    factory = getattr(mss, "MSS", None) or mss.mss
+    with factory() as screen:
         mon = screen.monitors[1]
     return CaptureRegion(mon["left"], mon["top"], mon["width"], mon["height"])
 
