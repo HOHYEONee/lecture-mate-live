@@ -11,6 +11,9 @@
 | UI 개발·테스트 (`FakeLLM`) | 표준 라이브러리만 |
 | 실제 GPT 답변 | `openai==3.49.0`, 환경변수 `OPENAI_API_KEY` |
 | 모델 변경 (선택) | 환경변수 `CLUE_MODEL` (기본 `gpt-6.1-sol`, 개발용 권장 `gpt-6-luna`), `CLUE_REASONING_EFFORT` (`low`·`medium`·`high`·`xhigh`·`max`, 미설정 시 모델 기본값) |
+| 지연·비용 조절 (선택) | `CLUE_IMAGE_DETAIL` (`auto`·`low`·`high`, 기본 `auto`), `CLUE_MAX_FRAMES` (스냅샷 외 이미지 수, 기본 8), `CLUE_RECENT_WINDOW_MS` (최근 전사 범위, 기본 600000), `CLUE_MAX_OUTPUT_TOKENS` (기본 없음), `CLUE_TIMEOUT_S` (API 요청 제한 시간, 기본 60) |
+
+첫 조각이 오기 전 일시 오류(429, 5xx, 연결·시간 초과)는 1초 뒤 한 번 다시 요청합니다. 재시도 횟수와 과거 검색 시간은 `answers.retries`, `answers.rag_search_ms`에 남고 `show_answers`에서 볼 수 있습니다.
 
 ## 2. 시작하기
 

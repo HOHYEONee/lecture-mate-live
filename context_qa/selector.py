@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass
 
 from interface_spec.contracts import (
@@ -51,6 +52,7 @@ class ContextSelection:
     qa_history: tuple[QAPair, ...]
     notes: tuple[str, ...] = ()
     next_tag: int = 1
+    rag_search_ms: int | None = None
 
     @property
     def frames(self) -> tuple[StoredFrame, ...]:
@@ -100,8 +102,12 @@ def select(
     past_transcripts: tuple[TranscriptSegment, ...] = ()
     t_star: int | None = None
 
+    rag_search_ms: int | None = None
     if question_type in RAG_TYPES:
+        started = time.monotonic_ns()
         hit = _past_hit(request.text, rag, until, notes)
+        if rag is not None:
+            rag_search_ms = (time.monotonic_ns() - started) // 1_000_000
         if hit is not None:
             t_star = (hit.start_ms + hit.end_ms) // 2
             lo, hi = t_star - PAST_WINDOW_MS, min(t_star + PAST_WINDOW_MS, until)
@@ -141,6 +147,7 @@ def select(
         qa_history=qa_history,
         notes=tuple(notes),
         next_tag=next_tag,
+        rag_search_ms=rag_search_ms,
     )
 
 

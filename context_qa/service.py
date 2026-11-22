@@ -24,11 +24,17 @@ from interface_spec.contracts import (
 )
 
 from .classifier import classify
-from .llm import LLMClient, LLMError, LLMStream, OpenAIClient, Usage
+from .llm import LLMClient, LLMError, LLMStream, OpenAIClient, Usage, env_int
 from .prompt import PromptBundle, build_prompt
 from .selector import ContextSelection, select
 from .store import ContextStore
 from .tagfilter import TagFilter
+
+
+DEFAULT_MAX_FRAMES = 8
+DEFAULT_RECENT_WINDOW_MS = 600_000
+LLM_ATTEMPTS = 2
+RETRY_DELAY_S = 1.0
 
 
 @dataclass(eq=False, slots=True)
@@ -41,6 +47,8 @@ class _QuestionTask:
     registered: bool = False
     recorded: bool = False
     terminal: AnswerEvent | None = None
+    rag_search_ms: int | None = None
+    retries: int = 0
 
     def elapsed_ms(self) -> int:
         return (time.monotonic_ns() - self.started_ns) // 1_000_000
@@ -50,16 +58,17 @@ class ContextQAService:
     def __init__(
         self,
         llm: LLMClient | None = None,
-        recent_window_ms: int = 600_000,
+        recent_window_ms: int | None = None,
         batch_size: int = 100,
         poll_timeout_s: float = 0.2,
         stop_timeout_s: float = 5.0,
         strategy: str = "full",
         rag: RAGIndexAPI | None = None,
-        max_frames: int = 8,
+        max_frames: int | None = None,
     ) -> None:
         self._llm = llm
-        self._max_frames = max_frames
+        self._max_frames = max_frames or env_int("CLUE_MAX_FRAMES", DEFAULT_MAX_FRAMES)
+        recent_window_ms = recent_window_ms or env_int("CLUE_RECENT_WINDOW_MS", DEFAULT_RECENT_WINDOW_MS)
         self.last_selection: ContextSelection | None = None
         self.last_prompt: PromptBundle | None = None
         self.startup_notes: tuple[str, ...] = ()
@@ -268,9 +277,9 @@ class ContextQAService:
             bundle = build_prompt(request, selection, self._session_dir)
             self.last_selection = selection
             self.last_prompt = bundle
+            task.rag_search_ms = selection.rag_search_ms
             if self._llm is None:
                 self._llm = OpenAIClient()
-            stream = self._llm.stream(bundle.request)
             tags = TagFilter()
             first_latency: int | None = None
 
@@ -288,9 +297,24 @@ class ContextQAService:
                     self._emit(AnswerDelta(request.session_id, request.question_id, index, text))
                     return True
 
-            for text in stream:
-                if text and not deliver(tags.feed(text)):
-                    return
+            for attempt in range(LLM_ATTEMPTS):
+                tags = TagFilter()
+                try:
+                    stream = self._llm.stream(bundle.request)
+                    for text in stream:
+                        if text and not deliver(tags.feed(text)):
+                            return
+                    break
+                except LLMError as exc:
+                    if not exc.transient or task.parts or attempt + 1 >= LLM_ATTEMPTS:
+                        raise
+                    task.retries += 1
+                    _close_quietly(stream)
+                    stream = None
+                    if self._stopping.wait(RETRY_DELAY_S):
+                        raise
+                    if task.done:
+                        return
             if not deliver(tags.finish()):
                 return
             task.usage = stream.usage
@@ -321,10 +345,7 @@ class ContextQAService:
             if stream is not None:
                 if task.usage is None:
                     task.usage = getattr(stream, "usage", None)
-                try:
-                    stream.close()
-                except Exception:
-                    pass
+                _close_quietly(stream)
             self._finish(task, None)
             if task.registered and task.terminal is not None and not isinstance(task.terminal, AnswerResult):
                 self._record(task, task.terminal)
@@ -344,6 +365,8 @@ class ContextQAService:
                     output_tokens=usage.output_tokens if usage else None,
                     model=self._model_name(),
                     strategy=self._strategy,
+                    rag_search_ms=task.rag_search_ms,
+                    retries=task.retries,
                 )
             except Exception as exc:
                 self._report("db_write_failed", f"answer {event.question_id}: {exc}", True, event.question_id)
@@ -442,6 +465,15 @@ class ContextQAService:
             )
         except Exception:
             pass
+
+
+def _close_quietly(stream: LLMStream | None) -> None:
+    if stream is None:
+        return
+    try:
+        stream.close()
+    except Exception:
+        pass
 
 
 def _resolve_tag(tag: int | None, next_tag: int) -> int:

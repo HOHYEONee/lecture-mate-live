@@ -9,7 +9,10 @@ from typing import Sequence
 
 from context_qa import AnswerRecord, AnswerStatus, ContextStore, format_ms
 
-COLUMNS = ("question_id", "submitted", "type", "status", "first_ms", "total_ms", "in_tok", "out_tok", "model", "strategy", "error")
+COLUMNS = (
+    "question_id", "submitted", "type", "status", "first_ms", "total_ms", "rag_ms", "retry",
+    "in_tok", "out_tok", "model", "strategy", "error",
+)
 
 
 def session_ids(db_path: Path) -> list[str]:
@@ -47,6 +50,8 @@ def format_table(records: Sequence[AnswerRecord]) -> str:
                 r.status.value,
                 _cell(r.first_response_latency_ms),
                 str(r.elapsed_ms),
+                _cell(r.rag_search_ms),
+                str(r.retries),
                 _cell(r.input_tokens),
                 _cell(r.output_tokens),
                 _cell(r.model),

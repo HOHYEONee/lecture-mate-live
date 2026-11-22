@@ -82,6 +82,8 @@ CREATE TABLE IF NOT EXISTS answers (
     output_tokens INTEGER,
     model TEXT,
     strategy TEXT,
+    rag_search_ms INTEGER,
+    retries INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (session_id, question_id)
 );
 CREATE TABLE IF NOT EXISTS text_chunks (
@@ -112,6 +114,8 @@ ADDED_COLUMNS = {
         ("output_tokens", "INTEGER"),
         ("model", "TEXT"),
         ("strategy", "TEXT"),
+        ("rag_search_ms", "INTEGER"),
+        ("retries", "INTEGER NOT NULL DEFAULT 0"),
     ),
 }
 
@@ -172,6 +176,8 @@ class AnswerRecord:
     output_tokens: int | None
     model: str | None
     strategy: str | None
+    rag_search_ms: int | None = None
+    retries: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -324,6 +330,8 @@ class ContextStore:
         output_tokens: int | None = None,
         model: str | None = None,
         strategy: str | None = None,
+        rag_search_ms: int | None = None,
+        retries: int = 0,
     ) -> bool:
         self._check_session(event.session_id)
         context_tag = None
@@ -346,8 +354,8 @@ class ContextStore:
             cur = self._conn.execute(
                 "INSERT OR IGNORE INTO answers (session_id, question_id, answer, context_tag, "
                 "used_frame_ids, used_segment_ids, first_response_latency_ms, elapsed_ms, "
-                "status, error_code, input_tokens, output_tokens, model, strategy) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "status, error_code, input_tokens, output_tokens, model, strategy, rag_search_ms, retries) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     event.session_id,
                     event.question_id,
@@ -363,6 +371,8 @@ class ContextStore:
                     output_tokens,
                     model,
                     strategy,
+                    rag_search_ms,
+                    retries,
                 ),
             )
             return cur.rowcount == 1
@@ -551,7 +561,7 @@ class ContextStore:
                 "SELECT a.question_id, q.text, q.question_type, q.submitted_ms, a.status, a.answer, "
                 "a.error_code, a.context_tag, a.used_frame_ids, a.used_segment_ids, "
                 "a.first_response_latency_ms, a.elapsed_ms, a.input_tokens, a.output_tokens, "
-                "a.model, a.strategy FROM answers a LEFT JOIN questions q "
+                "a.model, a.strategy, a.rag_search_ms, a.retries FROM answers a LEFT JOIN questions q "
                 "ON q.session_id = a.session_id AND q.question_id = a.question_id "
                 "WHERE a.session_id = ? ORDER BY q.submitted_ms, a.question_id",
                 (self.session_id,),
@@ -574,6 +584,8 @@ class ContextStore:
                 output_tokens=r[13],
                 model=r[14],
                 strategy=r[15],
+                rag_search_ms=r[16],
+                retries=r[17],
             )
             for r in rows
         )

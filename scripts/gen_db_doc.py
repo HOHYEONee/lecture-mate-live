@@ -62,6 +62,8 @@ COLUMN_NOTES = {
     ("answers", "output_tokens"): "출력 토큰",
     ("answers", "model"): "사용 모델",
     ("answers", "strategy"): "맥락 선택 전략(`full` 등, 평가 시 A~D)",
+    ("answers", "rag_search_ms"): "과거 검색에 걸린 시간. 검색하지 않은 질문은 NULL",
+    ("answers", "retries"): "첫 조각 전 일시 오류로 다시 요청한 횟수",
     ("text_chunks", "chunk_id"): "RAG 청크 식별자",
     ("text_chunks", "segment_ids"): "포함한 `transcripts.segment_id` JSON 배열",
     ("chunk_embeddings", "embedding_model"): "임베딩 모델 이름. 다르면 복원하지 않음",

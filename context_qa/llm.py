@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any, Iterator, Protocol, TypeAlias
 
 DEFAULT_MODEL = "gpt-6.1-sol"
+DEFAULT_TIMEOUT_S = 60
+IMAGE_DETAILS = ("auto", "low", "high")
 
 _MIME_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
 
@@ -39,9 +41,33 @@ class Usage:
 
 
 class LLMError(Exception):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, transient: bool = False) -> None:
         super().__init__(message)
         self.code = code
+        self.transient = transient
+
+
+TRANSIENT_ERROR_NAMES = frozenset(
+    {"APIConnectionError", "APITimeoutError", "RateLimitError", "InternalServerError", "ConnectionError", "TimeoutError"}
+)
+
+
+def is_transient(exc: BaseException) -> bool:
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int) and (status == 429 or status >= 500):
+        return True
+    return any(cls.__name__ in TRANSIENT_ERROR_NAMES for cls in type(exc).__mro__)
+
+
+def env_int(name: str, default: int | None) -> int | None:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
 
 
 class LLMStream(Protocol):
@@ -119,21 +145,24 @@ class OpenAIClient:
         self,
         model: str | None = None,
         reasoning_effort: str | None = None,
-        image_detail: str = "auto",
+        image_detail: str | None = None,
         max_output_tokens: int | None = None,
         client: Any | None = None,
+        timeout_s: float | None = None,
     ) -> None:
         self.model = model or os.environ.get("CLUE_MODEL") or DEFAULT_MODEL
         self.reasoning_effort = reasoning_effort or os.environ.get("CLUE_REASONING_EFFORT") or None
-        self.image_detail = image_detail
-        self.max_output_tokens = max_output_tokens
+        detail = image_detail or os.environ.get("CLUE_IMAGE_DETAIL") or "auto"
+        self.image_detail = detail if detail in IMAGE_DETAILS else "auto"
+        self.max_output_tokens = max_output_tokens or env_int("CLUE_MAX_OUTPUT_TOKENS", None)
+        self.timeout_s = timeout_s or env_int("CLUE_TIMEOUT_S", DEFAULT_TIMEOUT_S)
         if client is None:
             try:
                 from openai import OpenAI
             except ImportError as exc:
                 raise LLMError("llm_unavailable", "openai package is not installed") from exc
             try:
-                client = OpenAI()
+                client = OpenAI(timeout=self.timeout_s, max_retries=0)
             except Exception as exc:
                 raise LLMError("llm_unavailable", str(exc)) from exc
         self._client = client
@@ -163,7 +192,7 @@ class OpenAIClient:
         try:
             events = self._client.responses.create(**kwargs)
         except Exception as exc:
-            raise LLMError("llm_request_failed", f"{type(exc).__name__}: {exc}") from exc
+            raise LLMError("llm_request_failed", f"{type(exc).__name__}: {exc}", is_transient(exc)) from exc
         stream = _GeneratorStream()
         return stream._bind(self._read(events, stream))
 
@@ -188,7 +217,7 @@ class OpenAIClient:
         except LLMError:
             raise
         except Exception as exc:
-            raise LLMError("llm_stream_error", f"{type(exc).__name__}: {exc}") from exc
+            raise LLMError("llm_stream_error", f"{type(exc).__name__}: {exc}", is_transient(exc)) from exc
         finally:
             close = getattr(events, "close", None)
             if close is not None:

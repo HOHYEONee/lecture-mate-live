@@ -117,6 +117,8 @@ erDiagram
 | `output_tokens` | INTEGER | 예 |  | 출력 토큰 (자동 추가 열) |
 | `model` | TEXT | 예 |  | 사용 모델 (자동 추가 열) |
 | `strategy` | TEXT | 예 |  | 맥락 선택 전략(`full` 등, 평가 시 A~D) (자동 추가 열) |
+| `rag_search_ms` | INTEGER | 예 |  | 과거 검색에 걸린 시간. 검색하지 않은 질문은 NULL (자동 추가 열) |
+| `retries` | INTEGER | 아니오 | 0 | 첫 조각 전 일시 오류로 다시 요청한 횟수 (자동 추가 열) |
 
 ### `text_chunks`
 
