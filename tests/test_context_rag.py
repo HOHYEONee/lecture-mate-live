@@ -140,6 +140,23 @@ class RAGWorkerTests(unittest.TestCase):
         with self.reopen() as store:
             self.assertEqual(store.count("transcripts"), 1)
 
+    def test_same_service_restarts_for_next_session(self) -> None:
+        rag = FakeRAG()
+        service = ContextQAService(rag=rag)
+        self.services.append(service)
+        for name, segs in (("a", [seg(0)]), ("b", [seg(1), seg(2)])):
+            session_dir = self.session_dir / name
+            session_dir.mkdir()
+            queue: Queue = Queue()
+            service.start(SID, str(session_dir), queue, lambda e: None, self.errors.append)
+            for s in segs:
+                queue.put(s)
+            service.drain_and_stop()
+            with ContextStore(SID, session_dir / "metadata.db") as store:
+                self.assertEqual(store.count("text_chunks"), len(segs))
+        self.assertEqual(rag.calls, ["start", "flush_pending", "stop"] * 2)
+        self.assertEqual(self.errors, [])
+
     def test_without_rag_no_chunks(self) -> None:
         service = self.run_session(None, [seg(i) for i in range(3)])
         self.assertIsNone(service.rag)

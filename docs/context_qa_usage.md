@@ -15,13 +15,16 @@
 ## 2. 시작하기
 
 ```python
-from context_qa import ContextQAService, FakeLLM
+from context_qa import create_context_qa
 from core import SessionManager
 
 manager = SessionManager()
 session = manager.start_session()
 
-qa = ContextQAService(llm=FakeLLM(delay_s=0.05))   # 실제 API: ContextQAService()
+qa = create_context_qa()                 # 실제 GPT + HybridRAGIndex
+# qa = create_context_qa(fake_llm=True)  # API 키 없이 UI 개발
+for note in qa.startup_notes:            # RAG 대체 사용 등 시작 시 알림
+    print(note)
 qa.start(
     session.session_id,
     str(session.session_dir),
@@ -33,7 +36,29 @@ qa.start(
 
 - `start()`는 `session_dir/metadata.db`를 만들고 큐를 소비하는 스레드를 띄운 뒤 바로 반환합니다.
 - 큐에 들어온 `FrameRecord`·`TranscriptSegment`는 이 모듈이 SQLite에 저장합니다. 앱에서 따로 저장할 필요가 없습니다.
-- 한 서비스 객체는 한 세션에만 씁니다. 새 세션은 새 `ContextQAService`로 시작합니다.
+- 한 서비스 객체는 한 세션에만 씁니다. 새 세션은 `create_context_qa()`로 새로 만듭니다.
+- `create_context_qa(*, fake_llm=False, rag="hybrid", **옵션)`
+
+| `rag` | 동작 |
+|---|---|
+| `"hybrid"` (기본) | `rag.HybridRAGIndex` 사용. `sentence-transformers`가 없으면 글자 빈도 임베더로 대체(키워드 위주 검색), `rag` 패키지가 없으면 과거 검색 없이 동작. 어느 경우든 `startup_notes`에 이유가 남습니다 |
+| `"fake"` | 테스트용 `FakeRAG` |
+| `"none"` | 과거 검색 없음 |
+
+- 전사는 저장 후 별도 스레드(`context-qa-rag`)에서 인덱싱합니다. 큐 소비와 UI를 막지 않습니다.
+- 질문은 유형(`current_visual` / `past` / `general`)에 따라 화면·전사를 골라 보냅니다. "아까", "앞에서" 같은 과거 질문은 RAG로 해당 시점을 찾고 그 전후 전사·화면을 함께 보냅니다.
+
+### 앱 연결 (`desktop_app`)
+
+`desktop_app/adapters.py`의 `protocol_adapters()`에서 `MockContextQA()`만 바꾸면 됩니다.
+
+```python
+from context_qa import create_context_qa
+...
+(MockFrameProcessor(), MockAudioProcessor(), create_context_qa())
+```
+
+`DesktopController`가 이미 콜백을 Qt Signal로 넘기고 있어 다른 변경은 필요 없습니다. 컨트롤러는 세션마다 같은 객체를 다시 `start()`하는데, 이전 세션의 `drain_and_stop()`이 끝난 뒤라면 같은 객체로 새 세션을 시작할 수 있습니다.
 
 ## 3. 콜백은 다른 스레드에서 호출됩니다
 
@@ -118,8 +143,8 @@ manager.finish_session(session.session_id)   # 3. 마지막에
 ```
 
 - `drain_and_stop()`은 남은 이벤트를 모두 저장할 때까지 **블로킹**합니다. 진행 중 질문이 있으면 최대 약 5초 더 기다립니다. UI 스레드가 멈추지 않도록 작업 스레드에서 호출하세요.
+- 내부 순서(명세 7장): 큐 잔여 저장 → RAG 인덱싱 대기 → `flush_pending()` 결과 저장 → RAG 정리 → 진행 중 질문 취소 → DB 닫기. RAG 단계가 실패해도 DB는 닫힙니다.
 - 진행 중이던 질문은 `AnswerCancelled`로 끝나고 DB에 취소로 기록됩니다.
-- 2단계에서 RAG 작업 정리(`flush_pending()` 저장)가 이 단계에 추가됩니다. 호출 방법은 같습니다.
 
 ## 8. 오류 알림 (`ModuleError`)
 
@@ -130,6 +155,11 @@ manager.finish_session(session.session_id)   # 3. 마지막에
 | `db_write_failed` | `False` | 수집 이벤트 저장 실패 (재시도 후에도 실패). 데이터 유실 가능성이 있어 수집 중지·오류 표시를 권장 |
 | `db_write_failed` | `True` | 질문·답변 기록 저장 실패. 답변 표시는 정상 |
 | `callback_failed` | `True` | `on_answer_event` 콜백에서 예외 발생 |
+| `rag_restore_failed` | `True` | 저장된 청크의 임베딩 모델이 달라 복원하지 못함. 빈 인덱스로 계속 |
+| `rag_start_failed` | `True` | RAG 시작 실패. 과거 검색 없이 계속 |
+| `rag_index_failed` | `True` | 전사 1건 인덱싱 실패. 다음 전사는 계속 처리 |
+| `rag_flush_failed` / `rag_stop_failed` | `True` | 종료 시 RAG 정리 실패. DB는 정상 종료 |
+| `db_write_failed` | `False` | 청크 저장 실패 |
 
 `recoverable=False`일 때 앱이 `ERROR`로 전환할지, 수집만 멈출지는 팀에서 정합니다.
 
@@ -160,8 +190,14 @@ FakeLLM(
 .\.venv\Scripts\python.exe -m scripts.demo_context_qa --fake --session-dir demo_session `
     --start-image start.png --submit-image submit.png --transcript transcript.txt --question "이 그래프가 뭐예요?"
 
+# 모델에 보낸 프롬프트 확인 (이미지는 경로만)
+.\.venv\Scripts\python.exe -m scripts.demo_context_qa --fake --dump-prompt ...
+
 # 세션 DB에 저장된 질문별 결과(상태·지연·토큰·모델) 조회
 .\.venv\Scripts\python.exe -m scripts.show_answers demo_session --full
+
+# GUI 없이 실제 프레임·음성 모듈과 연결 (팀원 모듈 병합 후, 's' 상태, 'q' 종료)
+.\.venv\Scripts\python.exe -m scripts.live_session [--no-audio] [--fake-llm] [--rag hybrid|fake|none] [--region l,t,w,h]
 ```
 
 - 전사 파일은 한 줄에 `[mm:ss] 텍스트` 형식입니다.
