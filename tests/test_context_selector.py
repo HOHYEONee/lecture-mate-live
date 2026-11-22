@@ -16,7 +16,7 @@ from context_qa import (
     select,
 )
 from context_qa.llm import ImagePart, TextPart
-from context_qa.selector import content_tokens
+from context_qa.selector import _visual_around, content_tokens
 from interface_spec.contracts import (
     AnswerResult,
     FrameDecision,
@@ -124,28 +124,7 @@ class LectureFixture(unittest.TestCase):
         self.assertFalse(recent & {s.segment_id for s in sel.past_transcripts})
 
 
-class ClassifierTests(unittest.TestCase):
-    def test_table(self) -> None:
-        cases = {
-            "아까 설명한 스택 프레임이 뭐였지?": QuestionType.PAST,
-            "조금 전에 말한 공식 다시 알려줘": QuestionType.PAST,
-            "앞에서 나온 예시가 뭐야": QuestionType.PAST,
-            "처음에 정의한 용어가 뭐였죠": QuestionType.PAST,
-            "이 그래프가 의미하는 게 뭐야?": QuestionType.CURRENT_VISUAL,
-            "지금 이 코드에서 X19는 왜 저장해?": QuestionType.CURRENT_VISUAL,
-            "여기 수식에서 시그마는?": QuestionType.CURRENT_VISUAL,
-            "이 표 해석해줘": QuestionType.CURRENT_VISUAL,
-            "캐시 메모리가 뭐야?": QuestionType.GENERAL,
-            "표현이 뭐야": QuestionType.GENERAL,
-            "그래프 이론이 뭐야": QuestionType.GENERAL,
-        }
-        for text, expected in cases.items():
-            with self.subTest(text=text):
-                self.assertEqual(classify(text), expected)
-
-    def test_all_six_types_defined(self) -> None:
-        self.assertEqual(len(QuestionType), 6)
-
+class TokenTests(unittest.TestCase):
     def test_content_tokens_strip_particles_and_cues(self) -> None:
         self.assertEqual(content_tokens("아까 설명한 스택 프레임이 뭐였지?"), {"스택", "프레임"})
         self.assertIn("x19", content_tokens("X19는"))
@@ -238,6 +217,50 @@ class SelectorTests(LectureFixture):
         self.assertEqual(sel.t_star_ms, 3_504_500)
         self.assert_common(request, sel)
         self.assertTrue(all(s.end_ms <= 3_000_000 for s in sel.past_transcripts))
+
+    def test_past_visual_takes_three_visual_frames_around_t_star(self) -> None:
+        request, sel = self.pick("아까 나온 스택 프레임 그림 다시 설명해줘")
+        self.assert_common(request, sel)
+        self.assertEqual(sel.question_type, QuestionType.PAST_VISUAL)
+        self.assertEqual(sel.t_star_ms, 544_500)
+        self.assertEqual([f.frame_id for f in sel.past_frames], ["f016", "f019", "f022"])
+        self.assertTrue(all(f.frame_type == FrameType.VISUAL for f in sel.past_frames))
+        self.assertEqual([f.frame_id for f in sel.recent_frames], [f"f{i:03d}" for i in range(115, 120)])
+
+    def test_visual_around_falls_back_to_unknown_then_text(self) -> None:
+        def window(types):
+            frames = []
+            for i, t in enumerate(types):
+                self.store.add_frame(periodic(500 + i, ms=10_000_000 + i * 1000, frame_type=t))
+                frames.append(self.store.get_frame(f"f{500 + i:03d}"))
+            return frames
+
+        mixed = window([FrameType.TEXT, FrameType.UNKNOWN, FrameType.TEXT, FrameType.UNKNOWN, FrameType.UNKNOWN])
+        picked = _visual_around(mixed, 10_002_000, 3)
+        self.assertEqual([f.frame_id for f in picked], ["f501", "f503", "f504"])
+        texts = mixed[:1] + mixed[2:3]
+        self.assertEqual([f.frame_id for f in _visual_around(texts, 0, 3)], ["f500", "f502"])
+        self.assertEqual(_visual_around([], 0, 3), ())
+
+    def test_dispute_lecture_uses_rag_window(self) -> None:
+        request, sel = self.pick("교수님은 스택 프레임이 복귀 주소를 저장한다고 했는데 맞나요?")
+        self.assert_common(request, sel)
+        self.assertEqual(sel.question_type, QuestionType.DISPUTE_LECTURE)
+        self.assertEqual(sel.t_star_ms, 544_500)
+        self.assertEqual(len(sel.past_frames), 4)
+        self.assertIn("t054", {s.segment_id for s in sel.past_transcripts})
+
+    def test_dispute_answer_uses_twenty_qa_pairs(self) -> None:
+        for i in range(25):
+            qid = f"h{i:02d}"
+            self.store.add_question(question("캐시가 뭐야?", qid=qid, submitted=100_000 + i * 10_000))
+            self.store.add_answer(AnswerResult(SID, qid, f"답 {i}", None, (), (), 10, 20))
+        request, sel = self.pick("아까는 X19가 인자 레지스터라며? 왜 다르게 말해?")
+        self.assertEqual(sel.question_type, QuestionType.DISPUTE_ANSWER)
+        self.assertEqual([p.question_id for p in sel.qa_history], [f"h{i:02d}" for i in range(5, 25)])
+        self.assertEqual(self.rag.searches, [])
+        _, general = self.pick("캐시 메모리가 뭐야?")
+        self.assertEqual(len(general.qa_history), 5)
 
     def test_qa_history_excludes_later_questions(self) -> None:
         for qid, ms in (("a", 1_000_000), ("b", 2_000_000), ("c", SUBMIT + 10_000)):

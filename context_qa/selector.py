@@ -21,6 +21,9 @@ PAST_FRAMES = 4
 VISUAL_POOL = 20
 RAG_TOP_K = 5
 QA_HISTORY = 5
+DISPUTE_QA_HISTORY = 20
+PAST_VISUAL_FRAMES = 3
+RAG_TYPES = frozenset({QuestionType.PAST, QuestionType.PAST_VISUAL, QuestionType.DISPUTE_LECTURE})
 
 _TOKEN = re.compile(r"[0-9A-Za-z_]{2,}|[가-힣]{2,}")
 _PARTICLES = (
@@ -82,14 +85,15 @@ def select(
     budget = max(0, min(max_frames, MAX_TOTAL_FRAMES - len(snapshots)))
     since = until - recent_window_ms
     recent_transcripts = store.transcripts_between(since if since > 0 else None, until)
-    qa_history = store.recent_qa(QA_HISTORY, until_ms=until)
+    history_limit = DISPUTE_QA_HISTORY if question_type == QuestionType.DISPUTE_ANSWER else QA_HISTORY
+    qa_history = store.recent_qa(history_limit, until_ms=until)
     notes: list[str] = []
 
     past_frames: tuple[StoredFrame, ...] = ()
     past_transcripts: tuple[TranscriptSegment, ...] = ()
     t_star: int | None = None
 
-    if question_type == QuestionType.PAST:
+    if question_type in RAG_TYPES:
         hit = _past_hit(request.text, rag, until, notes)
         if hit is not None:
             t_star = (hit.start_ms + hit.end_ms) // 2
@@ -100,8 +104,11 @@ def select(
                 if s.segment_id not in recent_ids
             )
             window = store.representative_frames_between(lo if lo > 0 else None, hi)
-            nearest = sorted(window, key=lambda f: (abs(f.first_timestamp_ms - t_star), f.first_timestamp_ms))
-            past_frames = _chronological(nearest[: min(PAST_FRAMES, budget)])
+            if question_type == QuestionType.PAST_VISUAL:
+                past_frames = _visual_around(window, t_star, min(PAST_VISUAL_FRAMES, budget))
+            else:
+                nearest = sorted(window, key=lambda f: (abs(f.first_timestamp_ms - t_star), f.first_timestamp_ms))
+                past_frames = _chronological(nearest[: min(PAST_FRAMES, budget)])
 
     taken = {f.frame_id for f in past_frames}
     remaining = budget - len(past_frames)
@@ -149,6 +156,22 @@ def _past_hit(
         notes.append(f"rag_hit_unrelated: {top.chunk_id}")
         return None
     return top
+
+
+def _visual_around(window, t_star: int, limit: int) -> tuple[StoredFrame, ...]:
+    if limit <= 0 or not window:
+        return ()
+    best = min(_TYPE_PRIORITY.get(f.frame_type, 1) for f in window)
+    ordered = list(_chronological(f for f in window if _TYPE_PRIORITY.get(f.frame_type, 1) == best))
+    center = min(range(len(ordered)), key=lambda i: (abs(ordered[i].first_timestamp_ms - t_star), i))
+    picked = [center]
+    step = 1
+    while len(picked) < min(limit, len(ordered)):
+        for index in (center - step, center + step):
+            if 0 <= index < len(ordered) and len(picked) < limit:
+                picked.append(index)
+        step += 1
+    return tuple(ordered[i] for i in sorted(picked))
 
 
 def _snapshots(request: QuestionRequest) -> tuple[FrameRecord, ...]:
