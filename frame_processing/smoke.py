@@ -24,7 +24,7 @@ def main() -> None:
     parser.add_argument("--synthetic", action="store_true", help="never access the desktop")
     parser.add_argument("--region", nargs=4, type=int, metavar=("LEFT", "TOP", "WIDTH", "HEIGHT"))
     parser.add_argument("--seconds", type=float, default=10)
-    parser.add_argument("--threshold", type=float, required=True, help="experimental SSIM candidate")
+    parser.add_argument("--threshold", type=float, default=0.95, help="SSIM threshold (default: 0.95; experimental)")
     args = parser.parse_args()
     if not 1 <= args.seconds <= 60:
         parser.error("seconds must be in [1, 60]")
