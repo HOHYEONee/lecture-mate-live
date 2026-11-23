@@ -1,5 +1,5 @@
-# Frame module only; no changes to shared or other modules' dependencies.
-numpy>=1.26,<3
-opencv-python>=4.8,<6
-mss>=10,<11
-scikit-image>=0.25,<0.27
+# Install the CUDA build from Paddle's wheel index first. See README.md.
+-r requirements-base.txt
+paddlepaddle-gpu==3.3.1
+paddleocr==3.3.1
+paddlex==3.3.13

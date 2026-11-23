@@ -1,0 +1,3 @@
+# Synthetic tests and the reference SSIM benchmark.
+-r requirements-base.txt
+scikit-image>=0.25,<0.27

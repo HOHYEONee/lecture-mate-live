@@ -221,3 +221,13 @@ __marimo__/
 
 # Local captured lecture data and transcripts
 sessions/
+/experiments/
+/models/
+*.pdiparams
+*.pdmodel
+*.safetensors
+*.pt
+*.pth
+*.onnx
+.env.*
+!.env.example

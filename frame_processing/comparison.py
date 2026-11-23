@@ -10,11 +10,20 @@ import numpy as np
 from interface_spec.contracts import FrameDecision
 
 
+# Provisional thresholds for the service. Experiments can override either value.
+DEFAULT_GROUP_THRESHOLD = 0.90
+DEFAULT_REPRESENTATIVE_THRESHOLD = 0.98
+
+
 def decide_periodic(
-    s_pc: float | None, s_rc: float | None, threshold: float,
+    s_pc: float | None, s_rc: float | None, threshold: float, *,
+    representative_threshold: float | None = None,
 ) -> FrameDecision:
     if not isfinite(threshold) or not -1 <= threshold <= 1:
         raise ValueError("SSIM threshold must be finite and in [-1, 1]")
+    if representative_threshold is not None and (not isfinite(representative_threshold)
+                                                 or not -1 <= representative_threshold <= 1):
+        raise ValueError("representative SSIM threshold must be finite and in [-1, 1]")
     if s_pc is None or s_rc is None:
         return FrameDecision.NEW_GROUP
     if not isfinite(s_pc) or not isfinite(s_rc):
@@ -22,7 +31,7 @@ def decide_periodic(
     # P/C takes priority, including Case 4 (P differs while R is similar).
     if s_pc < threshold:
         return FrameDecision.NEW_GROUP
-    if s_rc < threshold:
+    if s_rc < (threshold if representative_threshold is None else representative_threshold):
         return FrameDecision.NEW_REPRESENTATIVE
     return FrameDecision.REUSED
 
@@ -35,11 +44,13 @@ class SSIMComparator:
     are edge-padded to 7 pixels. Threshold must be explicitly chosen by caller.
     """
 
-    def __init__(self, threshold: float, max_side: int | None = 960) -> None:
-        decide_periodic(None, None, threshold)
+    def __init__(self, threshold: float, max_side: int | None = 960, *,
+                 representative_threshold: float | None = None) -> None:
+        decide_periodic(None, None, threshold, representative_threshold=representative_threshold)
         if max_side is not None and max_side < 7:
             raise ValueError("max_side must be at least 7 or None")
         self.threshold = threshold
+        self.representative_threshold = representative_threshold
         self.max_side = max_side
 
     def prepare(self, bgr: np.ndarray) -> np.ndarray:

@@ -1,175 +1,137 @@
 # CLUE 프레임 처리
 
-강호현 담당 모듈입니다. 기존 `interface_spec.contracts.FrameProcessorAPI` v1.6을
-그대로 구현합니다. 공통 시계·세션 디렉터리·큐를 주입받으며, SQLite·GPT·음성·RAG·Qt를
-사용하지 않습니다. 합성 프레임 검증을 완료한 1차 구현이며 실제 강의 품질 검증은 남아 있습니다.
+앱에서 전달한 물리 픽셀 영역을 MSS로 기본 1FPS로 캡처하고, P/C/R SSIM으로 대표 프레임을
+선별합니다. 새 대표 프레임을 로컬 GPU로 분류한 뒤 JPEG와 `FrameRecord`를 만듭니다.
+프레임 처리 모듈은 앱이 제공하는 세션 ID, 절대 경로, 공통 시계, 수집 큐와 오류 콜백을
+사용합니다. SQLite 저장과 GPT 호출은 맥락 관리 모듈의 책임입니다.
 
-## 파일과 책임
+## 캡처와 대표 프레임
 
-| 파일 | 책임 |
+`P`는 직전 관측, `C`는 현재 관측, `R`은 현재 그룹의 대표입니다. 비교에는 BGR 색상
+SSIM을 사용하고, 긴 변이 960px를 넘으면 비교용 영상만 줄입니다. 새 대표 JPEG는 원본
+해상도로 저장합니다.
+
+| 조건 | 판정 | 처리 |
+|---|---|---|
+| 첫 관측 또는 `SSIM(P,C) < 0.90` | `new_group` | 그룹 생성, 분류, 새 대표 저장 |
+| 위 조건에 해당하지 않고 `SSIM(R,C) < 0.98` | `new_representative` | 같은 그룹에서 분류 후 대표 갱신 |
+| 두 조건 모두 해당하지 않음 | `reused` | 현재 대표의 파일·ID·분류를 재사용해 현재 관측 기록 전달 |
+
+임계값은 [comparison.py](comparison.py)에서 관리합니다. 생성자에서 `group_threshold`
+또는 `representative_threshold`를 명시하면 해당 값만 조정합니다. `ssim_threshold`를
+명시하면 두 비교에 같은 값을 사용합니다. 취득 시점은 `grab()` 반환 직후의 공통 시계로
+기록합니다. 정기 관측과 질문 스냅샷은 캡처 순번을 공유합니다.
+
+## 서비스 분류기
+
+서비스는 **PP-DocLayout_plus-L**을 **GPU `gpu:0`**에서 실행합니다. `start()`는 세션당
+한 번 모델을 초기화하고, 캡처 영역 크기의 합성 BGR 프레임으로 워밍업을 마친 뒤 정기
+캡처를 시작합니다. 분류는 새 대표를 저장하는 동기 경로에 있습니다. 정기 분류가 진행 중에도
+질문 스냅샷은 별도 취득·저장할 수 있습니다. 질문 스냅샷의 유형은 `Unknown`입니다.
+
+레이아웃 검출 점수 **0.50 이상**을 사용합니다. 시각 근거와 문자 근거를 다음 순서로 평가합니다.
+
+| 유형 | 기준 |
 |---|---|
-| `processor.py` | 공개 API, 기본 1FPS 워커, 수명주기, 큐 전달·복구, 오류 콜백 |
-| `pipeline.py` | 실제 취득 시각·공유 순번, 정기 P/C/R 상태, 독립 질문 스냅샷 |
-| `capture.py` | MSS 어댑터, 음수 물리 좌표, BGRA/gray → 소유 BGR 배열 |
-| `comparison.py` | 순수 P/C/R 분기, 색상 SSIM, 비교용 축소 |
-| `storage.py` | 원본 해상도 JPEG, 한글 경로, 기존 파일 덮어쓰기 방지 |
-| `classification.py` | 교체 가능한 분류 인터페이스와 경량 레이아웃 후보 |
-| `synthetic.py` | 외부 강의 자료를 사용하지 않는 합성 화면 |
-| `smoke.py` | 합성/수동 실캡처 연속 실행, 이미지 재읽기·순번·주기 확인 |
-| `benchmark.py` | 합성 단계별 시간, 참조 SSIM 대조, 임계값 후보 비교 |
-| `DEVELOPMENT.md` | 조사 결과, 개발 계획·결정, 실행 결과, 미완료 항목 |
+| `Visual` | 표·차트 박스 면적 3.5% 이상. 그림은 화면 10%와 텍스트 면적의 40% 중 큰 값 이상이며 화면의 90% 이하. 박스 중심이 화면 가장자리 15% 안에 있으면 최소 면적을 두 배로 적용 |
+| `Text` | Visual 근거가 없고 본문·제목·수식 등 텍스트 박스의 합집합 면적이 화면의 1.5% 이상 |
+| `Unknown` | 두 기준을 충족할 근거가 부족한 화면 |
 
-## 설치와 자동 테스트
+정적 슬라이드 41장과 필기·그래프 혼합 81장으로 다섯 후보를 비교했을 때 plus-L의
+Accuracy는 **73.8%**, Macro F1은 **62.7%**, Visual Recall은 **87.5% (49/56)**였습니다.
+Visual을 Text로 분류한 건은 0장이었고, RTX 4060 Ti 추론 P95는 약 35ms였습니다.
+선정에는 필기 Visual Recall **78.1% (25/32)**와 세 유형의 분류 균형을 함께 고려했습니다.
+새 강의에 대한 일반화는 별도 검증이 필요합니다. [분류 비교 요약 및 재현 방법](experiments/README.md#프레임-분류-비교)
 
-저장소 루트에서 실행합니다. Python 3.11 이상이 필요합니다.
+## Windows 설치
+
+검증 환경은 Windows x64, Python 3.12, NVIDIA RTX 4060 Ti, CUDA 12.6용 PaddlePaddle GPU
+3.3.1, PaddleOCR 3.3.1, PaddleX 3.3.13입니다. 저장소 루트에서 실행합니다.
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r frame_processing/requirements.txt
-.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+py -3.12 -m venv .venv
+$python = '.\.venv\Scripts\python.exe'
+& $python -m pip install paddlepaddle-gpu==3.3.1 --index-url https://www.paddlepaddle.org.cn/packages/stable/cu126/
+& $python -m pip install -r frame_processing/requirements.txt
+& $python -m pip check
+nvidia-smi
 ```
 
-검증 환경은 Windows, Python 3.13.7, NumPy 2.4.4, OpenCV 5.0.0, MSS 10.2.0,
-scikit-image 0.26.0입니다. 이번 개발 환경에서는 기존 NumPy/OpenCV를 재사용하기 위해
-`venv --system-site-packages`를 사용했습니다. 깨끗한 가상환경 설치와 Python 3.11 자체는
-별도로 검증하지 않았습니다. scikit-image는 수치 대조 테스트·벤치마크의 참조 구현입니다.
+CUDA와 cuDNN DLL 경로는 설치된 Paddle GPU 빌드 기준으로 확인하세요. 검증 환경에서는
+Paddle 빌드 cuDNN 9.9와 머신의 런타임 9.5 간 버전 차이 경고가 있었습니다.
+faster-whisper의 최신 CTranslate2도 CUDA 12·cuDNN 9 계열을 요구합니다. 두 패키지의
+동시 로드, DLL 선택 및 GPU 메모리 경쟁은 통합 환경에서 별도 검증해야 합니다.
+[PaddlePaddle Windows 설치](https://www.paddlepaddle.org.cn/documentation/docs/en/install/pip/windows-pip_en.html) ·
+[faster-whisper GPU 요구사항](https://github.com/SYSTRAN/faster-whisper#gpu)
 
-일반 테스트는 실제 화면을 읽지 않습니다. 테스트는 기존 core 5개와 새 프레임 38개로
-총 43개입니다. Codex Windows 샌드박스에서 `tempfile` 권한 오류가 발생하여 테스트는
-실행 권한을 허용받은 환경에서 수행했습니다. 공통 코드나 테스트를 우회 수정하지 않았습니다.
+### 가중치와 실행
 
-## 앱 담당자 연결 예시
+아래 명령은 가중치를 한 번 다운로드합니다. 서비스가 읽는 기본 경로는 현재 작업 디렉터리
+아래 `models/PP-DocLayout_plus-L_infer`입니다. 별도 위치에 가중치가 있다면
+`CLUE_FRAME_MODEL_DIR`에 `inference.json`, `inference.yml`, `inference.pdiparams`가
+들어 있는 폴더를 지정하세요. 추론은 로컬에서 실행합니다.
+[공식 PaddlePaddle 체크포인트](https://huggingface.co/PaddlePaddle/PP-DocLayout_plus-L/tree/main)
 
-아래 코드는 연결 방법을 설명합니다. 앱·맥락·음성 구현은 포함하지 않습니다.
+```powershell
+$weights = 'models/PP-DocLayout_plus-L_infer'
+New-Item -ItemType Directory -Force $weights | Out-Null
+foreach ($file in @('inference.json','inference.yml','inference.pdiparams')) {
+    curl.exe --fail --location "https://huggingface.co/PaddlePaddle/PP-DocLayout_plus-L/resolve/main/$file" -o "$weights/$file"
+    if ($LASTEXITCODE -ne 0) { throw "Weight download failed for $file" }
+}
+
+# 실제 GPU 모델과 합성 화면으로 캡처·스토리지·주기를 검증합니다.
+& $python -m frame_processing.smoke --synthetic --seconds 8
+
+# 실제 데스크톱 캡처는 대상 영역의 물리 픽셀 좌표를 지정합니다.
+& $python -m frame_processing.smoke --region 0 0 1280 720 --seconds 8
+```
+
+## 앱 연동 및 오류 정책
+
+[FrameProcessorAPI](../interface_spec/contracts.py)의 호출 형식과 데이터 계약을 사용합니다.
+앱은 수집과 맥락 모듈에 같은 `session_dir`를 전달합니다. 프레임 파일은
+`session_dir/frames/`에 저장하며 `FrameRecord.image_path`는 세션 상대 경로입니다.
 
 ```python
 from core import SessionManager
 from frame_processing import FrameProcessor
-from interface_spec.contracts import CaptureRegion, FrameProcessorAPI, FrameSource
+from interface_spec.contracts import CaptureRegion, FrameSource
 
-manager = SessionManager(queue_maxsize=1000)
+manager = SessionManager()
 session = manager.start_session()
+processor = FrameProcessor()
+processor.set_region(CaptureRegion(0, 0, 1280, 720))
+processor.start(session.session_id, str(session.session_dir), session.clock,
+                session.output_queue, on_error)  # on_error는 앱 제공
 
-# 기본 임계값 0.95는 임시 설정입니다. 실제 강의 실험 후 조정하세요.
-processor: FrameProcessorAPI = FrameProcessor()  # 기본값 0.95
-# 별도 임계값이 필요하면 FrameProcessor(ssim_threshold=0.985)처럼 지정합니다.
-processor.set_region(CaptureRegion(left=0, top=0, width=1280, height=720))
-
-# on_error는 앱이 제공하며 Qt Signal/앱 이벤트로 전달하고 즉시 반환합니다.
-# 맥락 소비자는 같은 output_queue와 session_dir를 사용합니다.
-processor.start(
-    session.session_id, str(session.session_dir), session.clock,
-    session.output_queue, on_error,
-)
-
-# 첫 유효 문자 입력 / 제출 순간에 각각 요청합니다.
-# UI를 막지 않도록 앱의 전용 작업 스레드에서 신속하게 실행하세요.
 input_frame = processor.capture_now(FrameSource.QUESTION_START)
 submit_frame = processor.capture_now(FrameSource.QUESTION_SUBMIT)
-# 앱은 두 Record를 QuestionRequest에 넣어 맥락 모듈에 직접 전달합니다.
 ```
 
-`capture_now()`는 파일 저장이 끝난 `FrameRecord`를 동기로 반환합니다. 질문의 입력·제출
-시각은 앱에서 해당 순간에 기록하고, 프레임 `timestamp_ms`는 실제 `grab()` 반환 직후의
-공통 시각을 사용합니다. 작업 스케줄 지연이 있으면 두 시각은 다를 수 있습니다.
-질문 스냅샷은 정기 큐로 보내지 않으며 분류는 `Unknown`입니다.
+- 앱 제어 작업 스레드에서 `start()`를 실행하세요. GPU·의존성·가중치가 준비되지 않았거나
+  로딩·워밍업이 실패하면 `FrameProcessingError`를 발생시키고 `on_error`에
+  `ModuleError(code="PROCESSING_FAILED", recoverable=False)`를 전달합니다. 정상 시작은
+  워밍업이 끝난 뒤입니다. 서비스는 지정된 GPU와 plus-L로 실행됩니다.
+- 개별 추론 예외는 로그에 기록하고 해당 대표를 `Unknown`으로 저장합니다. 분류 호출이
+  세 번 연속 실패하거나 GPU가 복구 불가능한 상태를 보고하면 수집을 중지하고
+  `PROCESSING_FAILED`를 전달합니다. 중단을 일으킨 관측의 프레임은 저장·발행하지 않습니다.
+- 큐가 가득 차면 `QUEUE_FULL`과 함께 하나의 미전달 레코드를 보관합니다. 소비자가 큐를
+  비운 후 `prepare_resume()`나 `stop()`을 호출해 보류 레코드를 전달합니다.
+- 일시정지는 두 수집 모듈의 중지 완료 확인 후 공통 시계를 정지합니다. 재개 준비와
+  시계 재개 뒤 수집을 재개합니다. 정상 종료는 수집 중지, 큐/RAG 처리, DB 커밋·닫기,
+  세션 해제 순서입니다. [수명주기 명세](../interface_spec/interface_spec_v1.md)
 
-정기 비교·분류·저장은 질문 취득 잠금을 잡지 않습니다. 질문과 정기는 실제 픽셀 취득과
-순번 발급만 직렬화합니다. 정기 주기 기준은 질문 요청에 따라 다시 설정되지 않습니다.
-질문 저장 등과 CPU·디스크를 공유하므로 실제 부하에 따른 지연은 측정해야 합니다.
+## 테스트와 실험
 
-### 일시정지·재개·종료
-
-앱의 제어 작업 스레드에서 수명주기 요청을 순서대로 실행합니다.
-
-1. 프레임 `pause()`와 음성 `pause()` 완료를 모두 확인한 후 앱이 `clock.pause()`를 호출합니다.
-   프레임 `pause()`는 이미 접수한 정기/질문 관측의 저장·전달 시도까지 기다립니다.
-2. 두 수집 모듈의 `prepare_resume()` 성공을 확인하고 앱이 `clock.resume()`를 호출한 뒤
-   각 모듈의 `resume()`를 호출합니다. 프레임의 시계·seq·대표 파일은 유지됩니다.
-3. 종료 시 두 수집 모듈을 중지한 뒤 맥락 소비자가 큐/RAG를 비우고 DB를 커밋합니다.
-   마지막에 앱이 `manager.finish_session()`을 호출합니다.
-
-프레임 모듈은 시계에서 `now_ms()`만 호출합니다. `pause()`/`stop()`은 완료를 기다리는
-동기 메서드이므로 UI 메인 스레드에서 호출하지 않습니다. 네이티브 캡처 또는 디스크 I/O
-자체가 OS에서 멈추는 상황에 강제 종료 시간을 보장하지는 않습니다.
-
-### 큐 포화와 오류
-
-- 큐 전달 대기는 기본 0.2초로 제한합니다. 성공한 파일의 Record가 큐에 들어가지 않으면
-  해당 Record 1개를 보관하고 새 캡처를 중지합니다. `QUEUE_FULL`, `recoverable=True`를
-  오류 콜백으로 알립니다. 배열·오류 객체는 수집 큐에 넣지 않습니다.
-- 앱은 두 수집 모듈과 공통 시계를 정상 순서로 일시정지하고, 소비자가 큐를 비운 뒤
-  `prepare_resume()`를 호출합니다. 여기서 보류 Record를 같은 ID/seq로 한 번 전달한 후
-  재개를 허용합니다. 여전히 가득 찼으면 예외를 반환하므로 재개하지 않습니다.
-- `stop()`도 보류 Record 전달을 시도합니다. 계속 포화 상태면 오류를 알리고
-  `FrameProcessingError`를 발생시킵니다. 소비자를 유지해 큐를 비운 후 `stop()`을 다시
-  호출해야 합니다. 오류가 난 종료를 성공으로 표시하거나 세션을 해제하면 안 됩니다.
-- `pending_record`는 진단용 읽기 전용 속성입니다. 앱에서 직접 재전달하지 않습니다.
-  보류 Record는 메모리에 있으므로 프로세스 강제 종료 후 복구는 지원하지 않습니다.
-- `CAPTURE_FAILED`, `SAVE_FAILED`, `COMPARE_FAILED` 등은 수집을 멈추는 오류입니다.
-  기존 파일은 보존되며 새 세션으로 시작합니다. 분류 실패는 로그와 `Unknown`으로 대체합니다.
-- 오류 콜백은 예외를 던지거나 긴 작업을 수행하지 말고 앱 이벤트로 전달해야 합니다.
-
-## SSIM과 분류의 현재 한계
-
-P/C가 비유사하면 R/C와 관계없이 새 그룹입니다. P/C는 유사하고 R/C만 비유사하면 같은
-그룹에 새 대표를 저장합니다. 둘 다 유사하면 활성 대표 ID·경로·유형을 재사용하되 새
-관측 seq·시각의 Record를 발행합니다. 임계값과 같은 점수는 유사로 판정합니다.
-
-원본은 BGR JPEG로 저장하고 비교만 긴 변 960px 이하로 축소합니다. 색상 3채널,
-7×7 균일 창, data_range=255, 표본 공분산 SSIM입니다. OpenCV boxFilter로 계산하며
-[scikit-image 공식 SSIM 정의](https://scikit-image.org/docs/stable/api/skimage.metrics.html#skimage.metrics.structural_similarity)를
-참조 구현과 수치 대조합니다. MSS는 호출 스레드에서 리소스를 열고 닫습니다.
-[MSS 사용 문서](https://python-mss.readthedocs.io/stable/usage.html)도 참고하세요.
-
-`ssim_threshold`의 기본값은 **0.95**이며, 생성자에서 다른 값을 명시할 수 있습니다. 실험을 통한 확정값은 아닙니다. 0.90은 합성 그래프 추가도 놓쳤습니다.
-현재 합성 예제에서 0.985는 포인터/약한 잡음을 유사로, 사각 주석/그래프 추가를 비유사로
-나눴지만 이 결과는 해당 소수 예제에만 해당합니다. **팀 확정값이나 실제 강의 권장값이
-아닙니다.** 작은 글자·밑줄 변화는 전역 평균·축소 때문에 놓칠 수 있습니다.
-
-기본 분류기는 큰 연결 구조를 Visual, 여러 줄의 작은 연결 요소를 Text로 보는
-실험용 휴리스틱이며 빈 화면/불명확한 결과는 Unknown입니다. 작은 로고만으로 Visual을
-만들지 않으며 Visual 근거를 먼저 검사합니다. OCR이나 의미 이해가 없으므로 사진·수식·
-분리된 그래프 요소 등은 오분류할 수 있습니다. `classify(bgr) -> FrameType` 객체를
-생성자의 `classifier=`로 교체할 수 있습니다. 무거운 모델은 설치하지 않았습니다.
-분류 실패 시 fallback은 구현되어 있으나, 느린 사용자 분류기를 강제로 중단하지는 않습니다.
-
-## 수동 스모크 테스트와 성능 측정
-
-화면을 전혀 읽지 않는 10초 연속 검증:
+합성 단위·회귀 테스트는 GPU 없이 실행합니다. 별도 개발 환경에
+`frame_processing/requirements-dev.txt`를 설치한 후 실행하세요. 실제 GPU 검증은 위의
+`smoke --synthetic` 명령을 사용합니다.
 
 ```powershell
-.\.venv\Scripts\python.exe -m frame_processing.smoke --synthetic --seconds 10
-.\.venv\Scripts\python.exe -m frame_processing.benchmark --iterations 12
+& $python -m pip install -r frame_processing/requirements-dev.txt
+& $python -m unittest discover -s tests -v
 ```
 
-실제 Windows에서는 테스트 자료를 화면에 띄우고 **물리 픽셀 영역을 직접 지정**합니다.
-다음 좌표는 예시이므로 환경에 맞게 바꿔야 합니다. 자동 테스트에서는 실행하지 않습니다.
-
-```powershell
-.\.venv\Scripts\python.exe -m frame_processing.smoke --region 100 100 1280 720 --seconds 10
-# 왼쪽 보조 모니터 좌표 예시
-.\.venv\Scripts\python.exe -m frame_processing.smoke --region -1280 0 1280 720 --seconds 10
-```
-
-정적 화면 유지/슬라이드 전환/같은 슬라이드 주석 추가를 각각 확인하세요. DPI 배율은 앱에서
-물리 픽셀로 변환한 좌표를 전달해야 하며 이 모듈이 Qt 좌표를 변환하지 않습니다.
-`--threshold` 옵션을 생략하면 0.95를 사용하고, `--threshold 0.985`처럼 명시하면 지정값을 사용합니다.
-스모크 도구는 정기 Record와 질문 스냅샷 2개, 파일 재읽기·크기·순번 충돌을 확인합니다.
-평가 허용 범위는 10초에 약 10개(시작·끝 경계 포함 ±1.5개), 관측 간격 500~1500ms입니다.
-결과와 이미지는 Git에서 제외된 `sessions/<id>/` 아래에 남습니다.
-
-**아직 미실행:** 실제 MSS 화면 캡처, 다중 모니터·고DPI, 실제 강의 분류 정확도·SSIM
-튜닝, 앱·음성·SQLite와 통합. 합성 생성 시간은 실제 화면 취득 지연을 나타내지 않습니다.
-
-## 통합 전 협의할 정책
-
-- 현재는 실행 중 영역 변경을 거부하고, 일시정지에서 변경하면 P/R을 초기화해 다음 관측을
-  새 그룹으로 만듭니다. 이전 파일·seq는 유지합니다.
-- 현재는 일시정지 중 질문 캡처를 거부합니다. 팀의 허용 정책이 정해지면 담당 모듈 안에서 조정합니다.
-- 미제출 질문 파일은 정리 정책 합의 전까지 보존합니다.
-- 기존 이미지가 있는 세션으로 `start()`하여 seq를 초기화하는 동작은 거부합니다.
-  동일 세션은 pause/resume을 사용합니다. 디스크 기반 세션 복원은 구현 범위 밖입니다.
-- 인수인계 문서의 수식 분류 설명은 3.1과 7에서 서로 다릅니다. 현재 공통 명세는 의미 있는
-  그래프·표·그림의 Visual 우선만 정하고 수식 세부 기준은 정하지 않았습니다. 수식을 자동으로
-  Visual로 확정하는 규칙은 넣지 않았으며, 분류 데이터셋의 라벨링 기준을 먼저 합의해야 합니다.
+모델 비교, SSIM 스윕, 라벨링과 실험용 모델 의존성은 [실험 README](experiments/README.md)에서
+관리합니다. 강의 이미지·라벨·예측 및 모델 가중치는 로컬 디렉터리에 저장합니다.

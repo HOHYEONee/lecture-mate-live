@@ -24,23 +24,28 @@ def main() -> None:
     parser.add_argument("--synthetic", action="store_true", help="never access the desktop")
     parser.add_argument("--region", nargs=4, type=int, metavar=("LEFT", "TOP", "WIDTH", "HEIGHT"))
     parser.add_argument("--seconds", type=float, default=10)
-    parser.add_argument("--threshold", type=float, default=0.95, help="SSIM threshold (default: 0.95; experimental)")
+    parser.add_argument("--threshold", type=float, help="legacy single SSIM threshold for P/C and R/C")
+    parser.add_argument("--group-threshold", type=float, help="override the service's P/C threshold")
+    parser.add_argument("--representative-threshold", type=float, help="override the service's R/C threshold")
     args = parser.parse_args()
     if not 1 <= args.seconds <= 60:
         parser.error("seconds must be in [1, 60]")
     if not args.synthetic and args.region is None:
         parser.error("real desktop capture requires an explicit physical-pixel --region")
+    if args.threshold is not None and (args.group_threshold is not None or args.representative_threshold is not None):
+        parser.error("--threshold cannot be combined with --group-threshold or --representative-threshold")
     region = CaptureRegion(*(args.region or [0, 0, 1280, 720]))
+    processor = FrameProcessor(ssim_threshold=args.threshold, group_threshold=args.group_threshold,
+                               representative_threshold=args.representative_threshold,
+                               backend=SyntheticCapture() if args.synthetic else MSSCapture())
     manager = SessionManager()
     session = manager.start_session()
     errors = Queue()
-    processor = FrameProcessor(ssim_threshold=args.threshold,
-                               backend=SyntheticCapture() if args.synthetic else MSSCapture())
     processor.set_region(region)
     records, snapshots = [], []
-    started = monotonic()
     processor.start(session.session_id, str(session.session_dir), session.clock,
                     session.output_queue, errors.put)
+    started = monotonic()
     try:
         while monotonic() - started < args.seconds:
             elapsed = monotonic() - started

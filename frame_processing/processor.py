@@ -14,8 +14,8 @@ from interface_spec.contracts import (
 )
 
 from .capture import CaptureBackend, MSSCapture
-from .classification import FrameClassifier
-from .comparison import SSIMComparator
+from .classification import FrameClassifier, PlusLClassifier, SERVICE_LAYOUT_MODEL
+from .comparison import DEFAULT_GROUP_THRESHOLD, DEFAULT_REPRESENTATIVE_THRESHOLD, SSIMComparator
 from .pipeline import FramePipeline, FrameProcessingError
 from .storage import JPEGFrameStore
 
@@ -25,14 +25,17 @@ log = logging.getLogger(__name__)
 class FrameProcessor(FrameProcessorAPI):
     """Default 1FPS; lifecycle methods run on an app control/background thread.
 
-    Default SSIM threshold is 0.95 (provisional; not yet calibrated on real lectures).
+    Group and representative SSIM thresholds default to the service settings.
+    Passing ssim_threshold explicitly uses the same threshold for both comparisons.
     A saturated queue retains one pending Record and halts new captures. After
     the consumer catches up, prepare_resume() retries it before resume(). stop()
     also retries, and raises rather than claiming success if still undelivered.
     """
 
-    def __init__(self, *, ssim_threshold: float = 0.95, backend: CaptureBackend | None = None,
-                 classifier: FrameClassifier | None = None, interval_s: float = 1.0,
+    def __init__(self, *, ssim_threshold: float | None = None,
+                 group_threshold: float | None = None, representative_threshold: float | None = None,
+                 backend: CaptureBackend | None = None,
+                 interval_s: float = 1.0,
                  queue_timeout_s: float = .2, comparison_max_side: int | None = 960,
                  jpeg_quality: int = 90) -> None:
         if not isfinite(interval_s) or interval_s <= 0:
@@ -41,9 +44,16 @@ class FrameProcessor(FrameProcessorAPI):
             raise ValueError("queue_timeout_s must be finite and non-negative")
         if not 1 <= jpeg_quality <= 100:
             raise ValueError("jpeg_quality must be in [1, 100]")
-        self._comparator = SSIMComparator(ssim_threshold, comparison_max_side)
+        if ssim_threshold is not None:
+            if group_threshold is not None or representative_threshold is not None:
+                raise ValueError("use ssim_threshold alone or configure group and representative thresholds")
+            self._comparator = SSIMComparator(ssim_threshold, comparison_max_side)
+        else:
+            group = DEFAULT_GROUP_THRESHOLD if group_threshold is None else group_threshold
+            representative = (DEFAULT_REPRESENTATIVE_THRESHOLD if representative_threshold is None
+                              else representative_threshold)
+            self._comparator = SSIMComparator(group, comparison_max_side, representative_threshold=representative)
         self._backend = backend if backend is not None else MSSCapture()
-        self._classifier = classifier
         self._interval = interval_s
         self._queue_timeout = queue_timeout_s
         self._jpeg_quality = jpeg_quality
@@ -80,24 +90,38 @@ class FrameProcessor(FrameProcessorAPI):
 
     def start(self, session_id: str, session_dir: str, clock: SessionClockView,
               output_queue: Queue[IngestEvent], on_error: ErrorCallback) -> None:
-        with self._cv:
-            if self._pipeline is not None or (self._thread is not None and self._thread.is_alive()):
-                raise RuntimeError("stop the active frame session before start")
-            if self._region is None:
-                raise RuntimeError("set_region must be called before start")
-            if not session_id.strip():
-                raise ValueError("session_id must not be empty")
-            store = JPEGFrameStore(session_dir, self._jpeg_quality)
-            if any(store.frames_dir.iterdir()):
-                raise ValueError("start requires a fresh session; use pause/resume for the current session")
-            self._pipeline = FramePipeline(session_id, self._region, clock, self._backend,
-                                           store, self._comparator, self._classifier)
-            self._queue, self._on_error = output_queue, on_error
-            self._running, self._closing, self._prepared = True, False, False
-            self._fault = self._pending = None
-            self._next_due = monotonic()
-            self._thread = Thread(target=self._worker, name=f"frame-{session_id}", daemon=True)
-            self._thread.start()
+        try:
+            with self._cv:
+                if self._pipeline is not None or (self._thread is not None and self._thread.is_alive()):
+                    raise RuntimeError("stop the active frame session before start")
+                if self._region is None:
+                    raise RuntimeError("set_region must be called before start")
+                if not session_id.strip():
+                    raise ValueError("session_id must not be empty")
+                store = JPEGFrameStore(session_dir, self._jpeg_quality)
+                if any(store.frames_dir.iterdir()):
+                    raise ValueError("start requires a fresh session; use pause/resume for the current session")
+                try:
+                    classifier = self._initialize_classifier(self._region)
+                except Exception as exc:
+                    raise FrameProcessingError("PROCESSING_FAILED",
+                                               f"{SERVICE_LAYOUT_MODEL} GPU initialization failed: {exc}") from exc
+                self._pipeline = FramePipeline(session_id, self._region, clock, self._backend,
+                                               store, self._comparator, classifier)
+                self._queue, self._on_error = output_queue, on_error
+                self._running, self._closing, self._prepared = True, False, False
+                self._fault = self._pending = None
+                self._next_due = monotonic()
+                self._thread = Thread(target=self._worker, name=f"frame-{session_id}", daemon=True)
+                self._thread.start()
+        except FrameProcessingError as error:
+            self._report(error, session_id, on_error)
+            raise
+
+    def _initialize_classifier(self, region: CaptureRegion) -> FrameClassifier:
+        classifier = PlusLClassifier()
+        classifier.warm_up(region.width, region.height)
+        return classifier
 
     def pause(self) -> None:
         with self._cv:

@@ -14,7 +14,7 @@ import numpy as np
 import skimage
 from skimage.metrics import structural_similarity
 
-from .classification import LayoutHeuristicClassifier
+from .experiments.heuristic import LayoutHeuristicClassifier
 from .comparison import SSIMComparator
 from .storage import JPEGFrameStore
 from .synthetic import SyntheticCapture, graph_slide, text_slide

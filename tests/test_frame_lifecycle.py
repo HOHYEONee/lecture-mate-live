@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from inspect import signature
+from itertools import cycle
 from queue import Empty, Queue
 from threading import Event
 import tempfile
@@ -14,7 +15,8 @@ import numpy as np
 
 from core import SessionManager
 from frame_processing import FrameProcessor, FrameProcessingError
-from frame_processing.classification import LayoutHeuristicClassifier
+from frame_processing.classification import UnrecoverableClassificationError
+from frame_processing.experiments.heuristic import LayoutHeuristicClassifier
 from interface_spec.contracts import (
     CaptureRegion, FrameDecision, FrameProcessorAPI, FrameRecord, FrameSource, FrameType,
     ModuleName,
@@ -48,6 +50,11 @@ class LifecycleTests(unittest.TestCase):
         self.session = self.manager.start_session()
         self.backend = Backend()
         self.errors = Queue()
+        model = patch("frame_processing.processor.PlusLClassifier", autospec=True)
+        self.model_factory = model.start()
+        self.addCleanup(model.stop)
+        self.classifier = self.model_factory.return_value
+        self.classifier.classify.return_value = FrameType.TEXT
         self.processor = FrameProcessor(ssim_threshold=.9, backend=self.backend,
                                         interval_s=.03, queue_timeout_s=.02)
         self.processor.set_region(CaptureRegion(-160, -120, 160, 120))
@@ -69,14 +76,92 @@ class LifecycleTests(unittest.TestCase):
         self.processor.start(s.session_id, str(s.session_dir), s.clock, s.output_queue,
                              callback or self.errors.put)
 
-    def test_default_ssim_threshold_and_explicit_override(self):
-        self.assertEqual(FrameProcessor(backend=self.backend)._comparator.threshold, 0.95)
-        self.assertEqual(FrameProcessor(ssim_threshold=0.985, backend=self.backend)._comparator.threshold, 0.985)
+    def test_default_ssim_pair_and_independent_overrides(self):
+        for options, expected in (
+            ({}, (0.90, 0.98)),
+            ({"group_threshold": 0.91}, (0.91, 0.98)),
+            ({"representative_threshold": 0.97}, (0.90, 0.97)),
+            ({"group_threshold": 0.91, "representative_threshold": 0.97}, (0.91, 0.97)),
+            ({"ssim_threshold": 0.985}, (0.985, None)),
+        ):
+            with self.subTest(options=options):
+                comparator = FrameProcessor(backend=self.backend, **options)._comparator
+                self.assertEqual((comparator.threshold, comparator.representative_threshold), expected)
+
+    def test_conflicting_or_invalid_ssim_thresholds_are_rejected(self):
+        for options in ({"ssim_threshold": .95, "group_threshold": .9},
+                        {"ssim_threshold": .95, "representative_threshold": .98}):
+            with self.subTest(options=options), self.assertRaisesRegex(ValueError, "ssim_threshold alone"):
+                FrameProcessor(**options)
+        for options in ({"group_threshold": float("nan")}, {"representative_threshold": 1.01}):
+            with self.subTest(options=options), self.assertRaisesRegex(ValueError, "finite"):
+                FrameProcessor(**options)
 
     def test_contract_signatures_match(self):
         for name in ["set_region", "start", "pause", "prepare_resume", "resume", "stop", "capture_now"]:
             self.assertEqual(list(signature(getattr(FrameProcessor, name)).parameters),
                              list(signature(getattr(FrameProcessorAPI, name)).parameters))
+
+    def test_service_loads_and_warms_plus_l_once_before_capture(self):
+        def check_warmup(width, height):
+            self.assertEqual((width, height), (160, 120))
+            self.assertEqual(self.backend.calls, 0)
+
+        self.classifier.warm_up.side_effect = check_warmup
+        self.start()
+        first, reused = [self.session.output_queue.get(timeout=2) for _ in range(2)]
+        self.processor.pause()
+        self.model_factory.assert_called_once_with()
+        self.classifier.warm_up.assert_called_once_with(160, 120)
+        self.classifier.classify.assert_called_once()
+        self.assertEqual((first.frame_type, reused.frame_type), (FrameType.TEXT, FrameType.TEXT))
+        self.assertEqual((first.decision, reused.decision), (FrameDecision.NEW_GROUP, FrameDecision.REUSED))
+
+    def test_model_initialization_errors_fail_start_and_report_to_app(self):
+        for failure in (FileNotFoundError("missing model weights"), ModuleNotFoundError("paddleocr"),
+                        RuntimeError("CUDA device unavailable"), RuntimeError("GPU out of memory")):
+            self.model_factory.side_effect = failure
+            with self.subTest(failure=failure), self.assertRaisesRegex(FrameProcessingError, "GPU initialization failed"):
+                self.start()
+            error = self.errors.get_nowait()
+            self.assertEqual((error.session_id, error.module, error.code),
+                             (self.session.session_id, ModuleName.FRAME, "PROCESSING_FAILED"))
+            self.assertFalse(error.recoverable)
+            self.assertIn(str(failure), error.message)
+            self.assertEqual(self.backend.calls, 0)
+            self.assertTrue(self.session.output_queue.empty())
+            self.assertIsNone(self.processor._pipeline)
+        self.assertEqual(self.model_factory.call_count, 4)
+
+    def test_gpu_warmup_failure_does_not_start_capture(self):
+        self.classifier.warm_up.side_effect = RuntimeError("GPU out of memory")
+        with self.assertRaisesRegex(FrameProcessingError, "GPU out of memory"):
+            self.start()
+        self.assertEqual(self.errors.get_nowait().code, "PROCESSING_FAILED")
+        self.assertEqual(self.backend.calls, 0)
+
+    def test_repeated_classification_errors_stop_after_two_unknown_records(self):
+        self.classifier.classify.side_effect = RuntimeError("temporary inference failure")
+        black = np.zeros_like(self.backend.image)
+        with patch.object(self.backend, "grab", side_effect=cycle((self.backend.image, black))):
+            self.start()
+            observed = [self.session.output_queue.get(timeout=2) for _ in range(2)]
+            error = self.errors.get(timeout=2)
+        self.assertEqual([r.frame_type for r in observed], [FrameType.UNKNOWN, FrameType.UNKNOWN])
+        self.assertEqual(error.code, "PROCESSING_FAILED")
+        self.assertFalse(error.recoverable)
+        self.assertIn("Repeated", error.message)
+        self.assertTrue(self.session.output_queue.empty())
+        self.assertEqual(len(list((self.session.session_dir / "frames").glob("*.jpg"))), 2)
+
+    def test_unrecoverable_gpu_error_stops_without_publishing_a_frame(self):
+        self.classifier.classify.side_effect = UnrecoverableClassificationError("CUDA device-side assert")
+        self.start()
+        error = self.errors.get(timeout=2)
+        self.assertEqual(error.code, "PROCESSING_FAILED")
+        self.assertFalse(error.recoverable)
+        self.assertTrue(self.session.output_queue.empty())
+        self.assertFalse(any((self.session.session_dir / "frames").iterdir()))
 
     def test_periodic_worker_reuses_files_and_emits_every_observation(self):
         self.start()
@@ -151,7 +236,7 @@ class LifecycleTests(unittest.TestCase):
                 if not release.wait(2):
                     raise TimeoutError("classifier gate not released")
                 return FrameType.TEXT
-        self.processor._classifier = BlockingClassifier()
+        self.classifier.classify.side_effect = BlockingClassifier().classify
         try:
             self.start()
             self.assertTrue(entered.wait(1))

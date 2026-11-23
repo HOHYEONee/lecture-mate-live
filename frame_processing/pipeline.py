@@ -15,10 +15,11 @@ from interface_spec.contracts import (
 )
 
 from .capture import CaptureBackend, normalize_bgr
-from .classification import FrameClassifier, LayoutHeuristicClassifier
+from .classification import FrameClassifier, UnrecoverableClassificationError
 from .comparison import SSIMComparator, decide_periodic
 
 log = logging.getLogger(__name__)
+MAX_CONSECUTIVE_CLASSIFICATION_FAILURES = 3
 
 
 class FrameStore(Protocol):
@@ -49,14 +50,15 @@ class FramePipeline:
 
     def __init__(self, session_id: str, region: CaptureRegion, clock: SessionClockView,
                  backend: CaptureBackend, store: FrameStore, comparator: SSIMComparator,
-                 classifier: FrameClassifier | None = None) -> None:
+                 classifier: FrameClassifier) -> None:
         self.session_id = session_id
         self.region = region
         self.clock = clock
         self.backend = backend
         self.store = store
         self.comparator = comparator
-        self.classifier = classifier if classifier is not None else LayoutHeuristicClassifier()
+        self.classifier = classifier
+        self._classification_failures = 0
         self._acquisition = Lock()
         self._periodic = Lock()
         self._seq = 0
@@ -111,6 +113,7 @@ class FramePipeline:
                             s_pc,
                             self.comparator.score(self._representative, current),
                             self.comparator.threshold,
+                            representative_threshold=self.comparator.representative_threshold,
                         )
             except Exception as exc:
                 raise FrameProcessingError("COMPARE_FAILED", str(exc), observation.timestamp_ms) from exc
@@ -124,9 +127,18 @@ class FramePipeline:
             else:
                 try:
                     frame_type = FrameType(self.classifier.classify(observation.pixels))
-                except Exception:
+                except UnrecoverableClassificationError as exc:
+                    raise FrameProcessingError("PROCESSING_FAILED", f"Unrecoverable frame classification error: {exc}",
+                                               observation.timestamp_ms) from exc
+                except Exception as exc:
+                    self._classification_failures += 1
+                    if self._classification_failures >= MAX_CONSECUTIVE_CLASSIFICATION_FAILURES:
+                        raise FrameProcessingError("PROCESSING_FAILED", f"Repeated frame classification failure: {exc}",
+                                                   observation.timestamp_ms) from exc
                     log.warning("frame classification failed; using Unknown", exc_info=True)
                     frame_type = FrameType.UNKNOWN
+                else:
+                    self._classification_failures = 0
                 classified = perf_counter()
                 frame_id, path = self._save(observation)
                 saved = perf_counter()
