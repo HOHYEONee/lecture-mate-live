@@ -35,6 +35,18 @@ def parse_region(value: str | None) -> CaptureRegion:
     return CaptureRegion(mon["left"], mon["top"], mon["width"], mon["height"])
 
 
+FALLBACK_SSIM = 0.95
+
+
+def make_frame_processor(factory, ssim: float | None):
+    if ssim is not None:
+        return factory(ssim_threshold=ssim)
+    try:
+        return factory()
+    except TypeError:
+        return factory(ssim_threshold=FALLBACK_SSIM)
+
+
 def summarize(db_path: Path, session_id: str) -> None:
     if not db_path.is_file():
         print("no metadata.db")
@@ -69,7 +81,7 @@ def main() -> int:
     parser.add_argument("--region", help="left,top,width,height (default: primary monitor)")
     parser.add_argument("--audio-device", default="default")
     parser.add_argument("--no-audio", action="store_true")
-    parser.add_argument("--ssim", type=float, default=0.985)
+    parser.add_argument("--ssim", type=float, default=None, help="SSIM threshold (default: frame module default)")
     parser.add_argument("--rag", choices=("hybrid", "fake", "none"), default="hybrid")
     parser.add_argument("--fake-llm", action="store_true")
     parser.add_argument("--sessions-root", default="sessions")
@@ -106,7 +118,7 @@ def main() -> int:
     service = create_context_qa(fake_llm=args.fake_llm, rag=args.rag)
     for note in service.startup_notes:
         print(f"[note] {note}")
-    frame = FrameProcessor(ssim_threshold=args.ssim)
+    frame = make_frame_processor(FrameProcessor, args.ssim)
     frame.set_region(parse_region(args.region))
     audio = None
     if not args.no_audio:
