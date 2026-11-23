@@ -25,13 +25,13 @@ log = logging.getLogger(__name__)
 class FrameProcessor(FrameProcessorAPI):
     """Default 1FPS; lifecycle methods run on an app control/background thread.
 
-    SSIM threshold is required because no team-wide value has been calibrated.
+    Default SSIM threshold is 0.95 (provisional; not yet calibrated on real lectures).
     A saturated queue retains one pending Record and halts new captures. After
     the consumer catches up, prepare_resume() retries it before resume(). stop()
     also retries, and raises rather than claiming success if still undelivered.
     """
 
-    def __init__(self, *, ssim_threshold: float, backend: CaptureBackend | None = None,
+    def __init__(self, *, ssim_threshold: float = 0.95, backend: CaptureBackend | None = None,
                  classifier: FrameClassifier | None = None, interval_s: float = 1.0,
                  queue_timeout_s: float = .2, comparison_max_side: int | None = 960,
                  jpeg_quality: int = 90) -> None:
