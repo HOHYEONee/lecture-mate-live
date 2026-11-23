@@ -1,0 +1,12 @@
+# Tested with Python 3.12; install with python -m pip install -r requirements-audio-rag.txt
+numpy==2.2.6; python_version < "3.12"
+numpy==2.5.4; python_version >= "3.12"
+scipy==1.15.3; python_version < "3.12"
+scipy==1.18.1; python_version >= "3.12"
+faster-whisper==1.2.1
+# faster-whisper 1.2.1 uses av.open(metadata_errors=...), removed in PyAV 19.
+av==15.1.0
+PyAudioWPatch==0.2.12.9; sys_platform == "win32"
+sentence-transformers==6.2.0
+kiwipiepy==0.24.1
+kiwipiepy_model==0.24.0
