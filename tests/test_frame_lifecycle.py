@@ -69,6 +69,10 @@ class LifecycleTests(unittest.TestCase):
         self.processor.start(s.session_id, str(s.session_dir), s.clock, s.output_queue,
                              callback or self.errors.put)
 
+    def test_default_ssim_threshold_and_explicit_override(self):
+        self.assertEqual(FrameProcessor(backend=self.backend)._comparator.threshold, 0.95)
+        self.assertEqual(FrameProcessor(ssim_threshold=0.985, backend=self.backend)._comparator.threshold, 0.985)
+
     def test_contract_signatures_match(self):
         for name in ["set_region", "start", "pause", "prepare_resume", "resume", "stop", "capture_now"]:
             self.assertEqual(list(signature(getattr(FrameProcessor, name)).parameters),
