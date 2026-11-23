@@ -1,6 +1,6 @@
 # 맥락 관리·Q&A 모듈 연결 가이드
 
-> 대상: 앱·시스템 통합 담당 · 기준 코드: `context_qa/` (PR #1~#3) · 계약: [`interface_spec/contracts.py`](../interface_spec/contracts.py)의 `ContextQAAPI`
+> 대상: 앱·시스템 통합 담당 · 기준 코드: `context_qa/` (브랜치 `feat/context-qa`) · 계약: [`interface_spec/contracts.py`](../interface_spec/contracts.py)의 `ContextQAAPI`
 
 앱에서 `ContextQAService`를 시작하고, 질문을 보내고, 답변 이벤트를 UI에 표시하고, 세션을 종료하는 방법을 정리한 문서입니다. API 키 없이 `FakeLLM`으로 UI를 먼저 개발할 수 있습니다.
 
@@ -10,6 +10,8 @@
 |---|---|
 | UI 개발·테스트 (`FakeLLM`) | 표준 라이브러리만 |
 | 실제 GPT 답변 | `openai==3.49.0`, 환경변수 `OPENAI_API_KEY` |
+| 과거 질문 검색 (실제 임베딩) | `sentence-transformers` (11/23 확인: 6.3.0, torch 2.15.0). 없으면 키워드 위주 대체 검색으로 동작 |
+| 데모 추천 모델 | `CLUE_MODEL=gpt-6.1-sol`, `CLUE_REASONING_EFFORT=medium` (11/23 비교: 첫 답변 2.6~3.1초, 후속 질문 연결이 `gpt-6-luna`보다 정확) |
 | 모델 변경 (선택) | 환경변수 `CLUE_MODEL` (기본 `gpt-6.1-sol`, 개발용 권장 `gpt-6-luna`), `CLUE_REASONING_EFFORT` (`low`·`medium`·`high`·`xhigh`·`max`, 미설정 시 모델 기본값) |
 | 지연·비용 조절 (선택) | `CLUE_IMAGE_DETAIL` (`auto`·`low`·`high`, 기본 `auto`), `CLUE_MAX_FRAMES` (스냅샷 외 이미지 수, 기본 8), `CLUE_RECENT_WINDOW_MS` (최근 전사 범위, 기본 600000), `CLUE_MAX_OUTPUT_TOKENS` (기본 없음), `CLUE_TIMEOUT_S` (API 요청 제한 시간, 기본 60) |
 
@@ -201,8 +203,33 @@ FakeLLM(
 
 # GUI 없이 실제 프레임·음성 모듈과 연결 (팀원 모듈 병합 후, 's' 상태, 'q' 종료)
 .\.venv\Scripts\python.exe -m scripts.live_session [--no-audio] [--fake-llm] [--rag hybrid|fake|none] [--region l,t,w,h]
+
+# 음성 모듈 대신 클로바노트 전사를 영상 시각에 맞춰 재생 (영상 재생과 동시에 Enter)
+.\.venv\Scripts\python.exe -m scripts.live_session --transcript-file lecture_clova.txt [--transcript-delay-ms 2000] [--video-offset-ms 0]
+
+# 영상을 보지 않고 특정 시점에서 질문 (연속 질문은 --question 반복)
+.\.venv\Scripts\python.exe -m scripts.offline_replay --transcript-file lecture_clova.txt --video lecture.mp4 --at 14:00 `
+    --question "아까 ...는 뭐였지?" --question "그럼 ...는?" [--rag hybrid|fake|none] [--fake-llm] [--model gpt-6.1-sol --effort medium]
 ```
 
-- 전사 파일은 한 줄에 `[mm:ss] 텍스트` 형식입니다.
+- `demo_context_qa`의 전사 파일은 한 줄에 `[mm:ss] 텍스트` 형식입니다. `live_session`·`offline_replay`의 `--transcript-file`은 클로바노트 내보내기 txt(`참석자 N MM:SS` 머리줄) 형식입니다.
+- 전사 재생은 발화가 끝나고 `--transcript-delay-ms`(기본 2초) 뒤에 큐에 넣어 실제 음성 모듈의 지연을 흉내 냅니다. `--video-offset-ms`로 영상 중간부터 시작하면 그 이전 발화는 들어가지 않습니다(앱을 늦게 켠 것과 같음).
+- `offline_replay`는 화면 캡처를 하지 않아 대표 화면 없이 질문 시점의 영상 프레임 2장만 씁니다.
 - `--session-dir`을 생략하면 임시 폴더를 쓰고 끝나면 지웁니다.
 - 세션 폴더와 강의 자료는 커밋하지 마세요.
+
+## 11. 실측과 데모 팁 (11/23, 추천 시스템 강의 48분)
+
+오프라인 재생, 질문 스냅샷 2장, `gpt-6-luna`(low) 기준:
+
+| 질문 유형 | 첫 답변 | 전체 | 입력 토큰 |
+|---|---|---|---|
+| 현재 화면 | 5.4초 | 7.0초 | 10,562 |
+| 과거 질문 (3건) | 1.8~3.1초 | 3.5~5.4초 | 약 12,000 |
+| 후속 질문 | 3.4초 | 5.6초 | 11,936 |
+
+- **예열:** 첫 인덱싱 때 임베딩 모델을 불러오느라 수 초~20초 걸립니다. 데모 시작 직후 바로 과거 질문을 하지 말고, 강의를 1~2분 재생한 뒤 질문하세요.
+- **과거 검색이 비는 경우:** 전사는 약 500자 또는 60초가 쌓여야 검색 청크가 됩니다. 강의 시작 직후에는 과거 질문이 일반 질문처럼 처리됩니다.
+- **용어 차이:** 전사가 "레지턴트 팩터"처럼 음성 인식된 표기라, 질문을 "latent factor"로 하면 다른 구간을 찾을 수 있습니다. 데모 질문은 강의에서 실제로 말한 표현을 쓰는 편이 안정적입니다.
+- **답변 중 입력 막기:** 생성 중 새 질문은 `busy`로 거절됩니다.
+- **입력 토큰:** 대부분 원본 해상도 화면 이미지입니다. 비용을 줄이려면 `CLUE_IMAGE_DETAIL=low`나 `CLUE_MAX_FRAMES`를 줄이세요(글자 인식 품질은 미측정).
