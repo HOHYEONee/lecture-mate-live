@@ -1,13 +1,25 @@
+"""Lazy multilingual embedding adapter; no remote inference API."""
+
+# [주요 설정 목록] 위치(함수) | 파라미터: 값 (설명)
+# DEFAULT_EMBEDDING_MODEL: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2" (다국어 임베딩)
+# SentenceTransformerEmbedder.__init__ | device: "cpu" (추론 장치), cache_folder: None (기본 .cache/models/embeddings)
+# SentenceTransformerEmbedder.__init__ | window_long_text: True (긴 본문을 내부 검색 구간으로 나눔)
+# SentenceTransformerEmbedder.encode_with_passages | budget: 최대 64토큰 (검색 구간 길이; 모델 최대 길이도 준수)
+# SentenceTransformerEmbedder.encode_with_passages | normalize_embeddings: True (코사인 검색용 단위 벡터)
+# 모델·검색 구간 방식 변경 시 기존 저장 벡터와 호환성을 확인하고 재인덱싱할 것.
+
 from pathlib import Path
 
 import numpy as np
 
 
+# [설정] DEFAULT_EMBEDDING_MODEL: 다국어 MiniLM (변경하면 기존 저장 벡터 재생성 필요).
 DEFAULT_EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 WINDOWED_SUFFIX = "::windowed-mean-v1"
 
 
 class SentenceTransformerEmbedder:
+    # [설정] device: "cpu", cache_folder: None (프로젝트 .cache/models/embeddings), window_long_text: True (내부 구간 검색).
     # [내부] 임베딩 모델·장치·캐시 경로·긴 텍스트 처리 방식과 모델 식별자를 준비한다.
     def __init__(self, model_name=DEFAULT_EMBEDDING_MODEL,
                  *, device="cpu", cache_folder=None, window_long_text=True):
@@ -56,6 +68,7 @@ class SentenceTransformerEmbedder:
         special = tokenizer.num_special_tokens_to_add(pair=False)
         if limit <= special:
             raise ValueError("embedding token limit must leave room for text")
+        # [설정] budget: 최대 64토큰 (부모 청크 내부 의미 검색 구간 길이; 모델 토큰 한도 이내).
         budget = min(64, limit-special)
         pieces, owners, weights = [], [], []
         for owner, text in enumerate(texts):
@@ -81,6 +94,7 @@ class SentenceTransformerEmbedder:
                 owners.append(owner)
                 weights.append(end-start)
                 start = end
+        # [설정] normalize_embeddings: True (벡터를 단위 길이로 정규화해 코사인 유사도에 사용).
         encoded = self._model.encode(pieces, normalize_embeddings=True,
                                      show_progress_bar=False)
         vectors = np.zeros((len(texts), encoded.shape[1]), dtype=np.float64)
