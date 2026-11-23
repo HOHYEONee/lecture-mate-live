@@ -29,6 +29,7 @@ def create_context_qa(
                 index = HybridRAGIndex()
     elif rag == "fake":
         index = FakeRAG()
-    service = ContextQAService(llm=FakeLLM() if fake_llm else None, rag=index, **service_options)
+    llm = service_options.pop("llm", None)
+    service = ContextQAService(llm=FakeLLM() if fake_llm else llm, rag=index, **service_options)
     service.startup_notes = tuple(notes)
     return service
