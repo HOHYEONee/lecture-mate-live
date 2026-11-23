@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from uuid import uuid4
 
-from context_qa import create_context_qa
+from context_qa import create_context_qa, format_ms
 from interface_spec.contracts import (
     AnswerCancelled,
     AnswerDelta,
@@ -19,6 +19,7 @@ from interface_spec.contracts import (
     ModuleError,
     QuestionRequest,
 )
+from scripts.transcript_replay import TranscriptReplayer, load_clova
 
 TERMINAL = (AnswerResult, AnswerCancelled, AnswerFailed)
 
@@ -85,7 +86,11 @@ def main() -> int:
     parser.add_argument("--rag", choices=("hybrid", "fake", "none"), default="hybrid")
     parser.add_argument("--fake-llm", action="store_true")
     parser.add_argument("--sessions-root", default="sessions")
+    parser.add_argument("--transcript-file", help="replay a Clova Note transcript instead of the audio module")
+    parser.add_argument("--transcript-delay-ms", type=int, default=2000)
+    parser.add_argument("--video-offset-ms", type=int, default=0, help="video position when Enter is pressed")
     args = parser.parse_args()
+    replay_segments = load_clova(args.transcript_file) if args.transcript_file else None
 
     from core import SessionManager
     from frame_processing import FrameProcessor
@@ -121,7 +126,8 @@ def main() -> int:
     frame = make_frame_processor(FrameProcessor, args.ssim)
     frame.set_region(parse_region(args.region))
     audio = None
-    if not args.no_audio:
+    replayer = None
+    if replay_segments is None and not args.no_audio:
         from audio_processing import AudioProcessor
 
         audio = AudioProcessor()
@@ -132,9 +138,24 @@ def main() -> int:
     if audio is not None:
         audio.start(session.session_id, session.clock, session.output_queue, on_error)
     print(f"session_id={session.session_id}\nsession_dir={session.session_dir}")
-    print("질문을 입력하세요. 's' 상태, 'q' 종료.")
 
     try:
+        if replay_segments is not None:
+            replayer = TranscriptReplayer(
+                replay_segments,
+                session.session_id,
+                session.output_queue,
+                session.clock,
+                video_offset_ms=args.video_offset_ms,
+                delay_ms=args.transcript_delay_ms,
+            )
+            print(f"전사 {len(replay_segments)}개 준비. 영상을 재생하고 바로 Enter를 누르세요.")
+            try:
+                input()
+            except EOFError:
+                pass
+            replayer.start()
+        print("질문을 입력하세요. 's' 상태, 'q' 종료.")
         while True:
             try:
                 line = input("> ").strip()
@@ -144,6 +165,9 @@ def main() -> int:
                 break
             if line == "s":
                 print(f"queue={session.output_queue.qsize()} clock_ms={session.clock.now_ms()} errors={len(errors)}")
+                if replayer is not None:
+                    print(f"video_position={format_ms(replayer.position_ms())} replayed={replayer.emitted} "
+                          f"skipped={replayer.skipped} remaining={replayer.remaining}")
                 summarize(session.session_dir / "metadata.db", session.session_id)
                 continue
             if not line:
@@ -172,13 +196,17 @@ def main() -> int:
                     break
             selection = service.last_selection
             if selection is not None:
-                print(f"[context] type={selection.question_type.value} t_star={selection.t_star_ms} "
+                position = f" video={format_ms(replayer.position_ms())}" if replayer is not None else ""
+                print(f"[context]{position} type={selection.question_type.value} t_star={selection.t_star_ms} "
                       f"past_frames={len(selection.past_frames)} recent_frames={len(selection.recent_frames)} "
-                      f"past_segments={len(selection.past_transcripts)} notes={list(selection.notes)}")
+                      f"past_segments={len(selection.past_transcripts)} rag_ms={selection.rag_search_ms} "
+                      f"notes={list(selection.notes)}")
     except KeyboardInterrupt:
         print()
     finally:
         print("stopping producers...")
+        if replayer is not None:
+            replayer.stop()
         if audio is not None:
             audio.stop()
         frame.stop()
