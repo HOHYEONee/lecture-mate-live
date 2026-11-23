@@ -227,6 +227,13 @@ class ContextQAService:
             finally:
                 self._rag_queue.task_done()
 
+    def wait_answer_saved(self, timeout: float | None = None) -> bool:
+        thread = self._qa_thread
+        if thread is None:
+            return True
+        thread.join(timeout)
+        return not thread.is_alive()
+
     def wait_rag_idle(self) -> None:
         queue = self._rag_queue
         if self._rag_active and queue is not None:

@@ -11,10 +11,12 @@ from types import SimpleNamespace
 from context_qa import (
     AnswerStatus,
     ContextQAService,
+    ContextSelection,
     ContextStore,
     FakeLLM,
     LLMError,
     OpenAIClient,
+    QuestionType,
     build_prompt,
     format_ms,
 )
@@ -60,6 +62,19 @@ def question(qid: str, submitted_ms: int, seq: int = 100, text: str = "이 그�
         submitted_ms=submitted_ms,
         input_frame=snapshot(seq, submitted_ms - 2000, f"{qid}_in", FrameSource.QUESTION_START),
         submit_frame=snapshot(seq + 1, submitted_ms, f"{qid}_sub", FrameSource.QUESTION_SUBMIT),
+    )
+
+
+def minimal_selection(request: QuestionRequest, transcripts) -> ContextSelection:
+    return ContextSelection(
+        question_type=QuestionType.GENERAL,
+        snapshots=(request.input_frame, request.submit_frame),
+        past_frames=(),
+        recent_frames=(),
+        recent_transcripts=tuple(transcripts),
+        past_transcripts=(),
+        t_star_ms=None,
+        qa_history=(),
     )
 
 
@@ -269,7 +284,8 @@ class PromptTests(unittest.TestCase):
             (Path(tmp) / "frames").mkdir()
             (Path(tmp) / "frames" / "q1_sub.jpg").write_bytes(b"x")
             segs = [TranscriptSegment(SID, "t1", 61_000, 64_000, " 미분의 정의 ")]
-            bundle = build_prompt(question("q1", 125_000, text="이거 뭐야?"), segs, tmp)
+            request = question("q1", 125_000, text="이거 뭐야?")
+            bundle = build_prompt(request, minimal_selection(request, segs), tmp)
 
         texts = [p.text for p in bundle.request.parts if isinstance(p, TextPart)]
         self.assertIn("[01:01] 미분의 정의", texts[0])
@@ -283,7 +299,8 @@ class PromptTests(unittest.TestCase):
 
     def test_empty_transcripts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            bundle = build_prompt(question("q1", 5000), [], tmp)
+            request = question("q1", 5000)
+            bundle = build_prompt(request, minimal_selection(request, []), tmp)
         self.assertIn("확정된 전사 없음", bundle.request.parts[0].text)
         self.assertEqual(bundle.segment_ids, ())
 

@@ -6,7 +6,6 @@ from typing import Sequence
 
 from interface_spec.contracts import FrameSource, QuestionRequest, TranscriptSegment
 
-from .classifier import QuestionType
 from .llm import ContentPart, ImagePart, LLMRequest, TextPart
 from .selector import ContextSelection
 
@@ -52,11 +51,9 @@ def format_ms(ms: int) -> str:
 
 def build_prompt(
     request: QuestionRequest,
-    selection: ContextSelection | Sequence[TranscriptSegment],
+    selection: ContextSelection,
     session_dir: str | Path,
 ) -> PromptBundle:
-    if not isinstance(selection, ContextSelection):
-        selection = _minimal_selection(request, tuple(selection))
     session_dir = Path(session_dir)
     parts: list[ContentPart] = []
     frame_ids: list[str] = []
@@ -115,24 +112,6 @@ def build_prompt(
         request=LLMRequest(instructions=INSTRUCTIONS, parts=tuple(parts)),
         frame_ids=tuple(frame_ids),
         segment_ids=tuple(dict.fromkeys(segment_ids)),
-    )
-
-
-def _minimal_selection(
-    request: QuestionRequest, transcripts: tuple[TranscriptSegment, ...]
-) -> ContextSelection:
-    snapshots = (request.input_frame, request.submit_frame)
-    if request.input_frame.frame_id == request.submit_frame.frame_id:
-        snapshots = (request.submit_frame,)
-    return ContextSelection(
-        question_type=QuestionType.GENERAL,
-        snapshots=snapshots,
-        past_frames=(),
-        recent_frames=(),
-        recent_transcripts=transcripts,
-        past_transcripts=(),
-        t_star_ms=None,
-        qa_history=(),
     )
 
 

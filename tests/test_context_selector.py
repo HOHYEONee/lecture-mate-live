@@ -326,8 +326,7 @@ class ServiceSelectionTests(unittest.TestCase):
             queue.join()
             service.wait_rag_idle()
             service.ask_async(question("아까 설명한 스택 프레임이 뭐였지?"))
-            assert service._qa_thread is not None
-            service._qa_thread.join(5)
+            self.assertTrue(service.wait_answer_saved(5))
             service.drain_and_stop()
             result = [e for e in events if isinstance(e, AnswerResult)][0]
             sent = [p.path.stem for p in llm.requests[0].parts if isinstance(p, ImagePart)]

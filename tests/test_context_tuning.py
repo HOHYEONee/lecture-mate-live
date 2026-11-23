@@ -112,8 +112,7 @@ class RetryTests(unittest.TestCase):
         self.service.wait_rag_idle()
         self.service.ask_async(question("q1", 10_000, text=text))
         terminal = self.log.wait_terminal("q1")[0]
-        assert self.service._qa_thread is not None
-        self.service._qa_thread.join(5)
+        self.assertTrue(self.service.wait_answer_saved(5))
         record = self.service.store.answer_records()[0]
         return terminal, record
 

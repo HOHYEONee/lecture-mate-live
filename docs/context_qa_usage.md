@@ -190,32 +190,33 @@ FakeLLM(
 
 ## 10. 확인용 스크립트
 
+모든 명령은 저장소 루트에서 실행합니다. `<...>`는 각자 가진 파일 경로로 바꿔 넣는 자리이고, 강의 자료는 저장소에 없습니다. 세션 폴더는 기본으로 저장소 루트의 `sessions/<session_id>/`에 생기며 커밋되지 않습니다.
+
 ```powershell
 # 이미지 2장 + 전사 파일로 질문 (API 키 없이 --fake)
-.\.venv\Scripts\python.exe -m scripts.demo_context_qa --fake --session-dir demo_session `
-    --start-image start.png --submit-image submit.png --transcript transcript.txt --question "이 그래프가 뭐예요?"
+.\.venv\Scripts\python.exe -m scripts.demo_context_qa --fake --session-dir <결과를 남길 폴더> `
+    --start-image <질문 시작 화면.png> --submit-image <제출 화면.png> --transcript <전사.txt> --question "이 그래프가 뭐예요?"
 
-# 모델에 보낸 프롬프트 확인 (이미지는 경로만)
-.\.venv\Scripts\python.exe -m scripts.demo_context_qa --fake --dump-prompt ...
+# 위 명령에 --dump-prompt를 붙이면 모델에 보낸 프롬프트를 출력 (이미지는 경로만)
 
 # 세션 DB에 저장된 질문별 결과(상태·지연·토큰·모델) 조회
-.\.venv\Scripts\python.exe -m scripts.show_answers demo_session --full
+.\.venv\Scripts\python.exe -m scripts.show_answers <세션 폴더> --full
 
 # GUI 없이 실제 프레임·음성 모듈과 연결 (팀원 모듈 병합 후, 's' 상태, 'q' 종료)
 .\.venv\Scripts\python.exe -m scripts.live_session [--no-audio] [--fake-llm] [--rag hybrid|fake|none] [--region l,t,w,h]
 
 # 음성 모듈 대신 클로바노트 전사를 영상 시각에 맞춰 재생 (영상 재생과 동시에 Enter)
-.\.venv\Scripts\python.exe -m scripts.live_session --transcript-file lecture_clova.txt [--transcript-delay-ms 2000] [--video-offset-ms 0]
+.\.venv\Scripts\python.exe -m scripts.live_session --transcript-file <클로바노트 전사.txt> [--transcript-delay-ms 2000] [--video-offset-ms 0]
 
 # 영상을 보지 않고 특정 시점에서 질문 (연속 질문은 --question 반복)
-.\.venv\Scripts\python.exe -m scripts.offline_replay --transcript-file lecture_clova.txt --video lecture.mp4 --at 14:00 `
+.\.venv\Scripts\python.exe -m scripts.offline_replay --transcript-file <클로바노트 전사.txt> --video <강의 영상.mp4> --at 14:00 `
     --question "아까 ...는 뭐였지?" --question "그럼 ...는?" [--rag hybrid|fake|none] [--fake-llm] [--model gpt-6.1-sol --effort medium]
 ```
 
 - `demo_context_qa`의 전사 파일은 한 줄에 `[mm:ss] 텍스트` 형식입니다. `live_session`·`offline_replay`의 `--transcript-file`은 클로바노트 내보내기 txt(`참석자 N MM:SS` 머리줄) 형식입니다.
 - 전사 재생은 발화가 끝나고 `--transcript-delay-ms`(기본 2초) 뒤에 큐에 넣어 실제 음성 모듈의 지연을 흉내 냅니다. `--video-offset-ms`로 영상 중간부터 시작하면 그 이전 발화는 들어가지 않습니다(앱을 늦게 켠 것과 같음).
 - `offline_replay`는 화면 캡처를 하지 않아 대표 화면 없이 질문 시점의 영상 프레임 2장만 씁니다.
-- `--session-dir`을 생략하면 임시 폴더를 쓰고 끝나면 지웁니다.
+- `demo_context_qa`에서 `--session-dir`을 생략하면 임시 폴더를 쓰고 끝나면 지웁니다. `live_session`·`offline_replay`는 `--sessions-root`(기본 `sessions`) 아래에 세션 폴더를 만듭니다.
 - 세션 폴더와 강의 자료는 커밋하지 마세요.
 
 ## 11. 실측과 데모 팁 (11/23, 추천 시스템 강의 48분)

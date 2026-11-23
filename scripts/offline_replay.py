@@ -188,8 +188,7 @@ def run_offline(
             if not done.wait(ANSWER_TIMEOUT_S):
                 service.cancel_question(qid)
                 done.wait(5)
-            if service._qa_thread is not None:
-                service._qa_thread.join(5)
+            service.wait_answer_saved(5)
             outcome = QuestionOutcome(text, submitted, events[-1] if events else None)
             selection = service.last_selection
             if selection is not None:
