@@ -50,9 +50,9 @@ from interface_spec.contracts import CaptureRegion, FrameProcessorAPI, FrameSour
 manager = SessionManager(queue_maxsize=1000)
 session = manager.start_session()
 
-# 실험용 후보입니다. 실제 강의로 측정한 값을 앱 설정에서 명시적으로 전달하세요.
-trial_threshold = 0.985
-processor: FrameProcessorAPI = FrameProcessor(ssim_threshold=trial_threshold)
+# 기본 임계값 0.95는 임시 설정입니다. 실제 강의 실험 후 조정하세요.
+processor: FrameProcessorAPI = FrameProcessor()  # 기본값 0.95
+# 별도 임계값이 필요하면 FrameProcessor(ssim_threshold=0.985)처럼 지정합니다.
 processor.set_region(CaptureRegion(left=0, top=0, width=1280, height=720))
 
 # on_error는 앱이 제공하며 Qt Signal/앱 이벤트로 전달하고 즉시 반환합니다.
@@ -122,7 +122,7 @@ P/C가 비유사하면 R/C와 관계없이 새 그룹입니다. P/C는 유사하
 참조 구현과 수치 대조합니다. MSS는 호출 스레드에서 리소스를 열고 닫습니다.
 [MSS 사용 문서](https://python-mss.readthedocs.io/stable/usage.html)도 참고하세요.
 
-`ssim_threshold`는 필수 생성자 인자입니다. 0.90은 합성 그래프 추가도 놓쳤습니다.
+`ssim_threshold`의 기본값은 **0.95**이며, 생성자에서 다른 값을 명시할 수 있습니다. 실험을 통한 확정값은 아닙니다. 0.90은 합성 그래프 추가도 놓쳤습니다.
 현재 합성 예제에서 0.985는 포인터/약한 잡음을 유사로, 사각 주석/그래프 추가를 비유사로
 나눴지만 이 결과는 해당 소수 예제에만 해당합니다. **팀 확정값이나 실제 강의 권장값이
 아닙니다.** 작은 글자·밑줄 변화는 전역 평균·축소 때문에 놓칠 수 있습니다.
@@ -139,7 +139,7 @@ P/C가 비유사하면 R/C와 관계없이 새 그룹입니다. P/C는 유사하
 화면을 전혀 읽지 않는 10초 연속 검증:
 
 ```powershell
-.\.venv\Scripts\python.exe -m frame_processing.smoke --synthetic --seconds 10 --threshold 0.985
+.\.venv\Scripts\python.exe -m frame_processing.smoke --synthetic --seconds 10
 .\.venv\Scripts\python.exe -m frame_processing.benchmark --iterations 12
 ```
 
@@ -147,13 +147,14 @@ P/C가 비유사하면 R/C와 관계없이 새 그룹입니다. P/C는 유사하
 다음 좌표는 예시이므로 환경에 맞게 바꿔야 합니다. 자동 테스트에서는 실행하지 않습니다.
 
 ```powershell
-.\.venv\Scripts\python.exe -m frame_processing.smoke --region 100 100 1280 720 --seconds 10 --threshold 0.985
+.\.venv\Scripts\python.exe -m frame_processing.smoke --region 100 100 1280 720 --seconds 10
 # 왼쪽 보조 모니터 좌표 예시
-.\.venv\Scripts\python.exe -m frame_processing.smoke --region -1280 0 1280 720 --seconds 10 --threshold 0.985
+.\.venv\Scripts\python.exe -m frame_processing.smoke --region -1280 0 1280 720 --seconds 10
 ```
 
 정적 화면 유지/슬라이드 전환/같은 슬라이드 주석 추가를 각각 확인하세요. DPI 배율은 앱에서
 물리 픽셀로 변환한 좌표를 전달해야 하며 이 모듈이 Qt 좌표를 변환하지 않습니다.
+`--threshold` 옵션을 생략하면 0.95를 사용하고, `--threshold 0.985`처럼 명시하면 지정값을 사용합니다.
 스모크 도구는 정기 Record와 질문 스냅샷 2개, 파일 재읽기·크기·순번 충돌을 확인합니다.
 평가 허용 범위는 10초에 약 10개(시작·끝 경계 포함 ±1.5개), 관측 간격 500~1500ms입니다.
 결과와 이미지는 Git에서 제외된 `sessions/<id>/` 아래에 남습니다.
