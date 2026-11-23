@@ -1,6 +1,5 @@
 # 맥락 관리·Q&A 모듈 (`context_qa/`)
-
-김혜연 담당 모듈입니다. 프레임·음성 모듈이 보낸 화면과 전사를 SQLite에 저장하고, 학생 질문이 들어오면 질문 종류에 맞는 화면·전사·이전 대화를 골라 GPT에 보내 답변을 스트리밍합니다. 공개 API는 [`interface_spec/contracts.py`](../interface_spec/contracts.py)의 `ContextQAAPI`(`start`, `ask_async`, `cancel_question`, `drain_and_stop`)를 그대로 구현합니다.
+프레임·음성 모듈이 보낸 화면과 전사를 SQLite에 저장하고, 학생 질문이 들어오면 질문 종류에 맞는 화면·전사·이전 대화를 골라 GPT에 보내 답변을 스트리밍합니다. 공개 API는 [`interface_spec/contracts.py`](../interface_spec/contracts.py)의 `ContextQAAPI`(`start`, `ask_async`, `cancel_question`, `drain_and_stop`)를 그대로 구현합니다.
 
 ## 담당 범위
 
