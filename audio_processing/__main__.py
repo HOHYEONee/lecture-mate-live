@@ -1,3 +1,5 @@
+"""Run from the repository root: python -m audio_processing --help."""
+
 import argparse
 from dataclasses import asdict
 import json
@@ -6,21 +8,31 @@ from queue import Empty, Queue
 from threading import Event, Thread
 from time import monotonic, sleep
 from uuid import uuid4
+
 from core import SessionClock
 from .backends import DEFAULT_MODEL, FasterWhisperTranscriber, WasapiLoopbackSource
 from .chunks import AudioBlock, Chunker, SAMPLE_RATE, TranscriptAssembler
 from .processor import AudioProcessor
 
+# [주요 설정 목록] 위치(함수) | 파라미터: 값 (설명)
+# main | --seconds: 30 (검사 시간), --device: "default" (출력 장치), --model: DEFAULT_MODEL (전사 모델)
+# main | --language: "ko", --compute-device: "auto", --compute-type: None (언어·장치·정밀도)
+# main | --hotwords: "", --local-files-only: False (인식 힌트·오프라인 실행 여부)
+# main | download_root: ".cache/models/whisper" (Whisper 모델 저장 경로)
+# main | holdback_ms: 250 (파일 검사 경계 단어 보류 시간)
+
 
 # [외부(CLI) / 파일 저장(JSON)] 실행 옵션에 따라 장치 조회·파일 전사·실수집 검사를 수행하고 결과를 출력·저장한다.
 def main(argv=None):
     parser = argparse.ArgumentParser(description="WASAPI loopback / local-file transcription check")
+    # [설정] --seconds: 30초, --device: "default", --model: DEFAULT_MODEL (검사 길이·출력 장치·모델 선택).
     parser.add_argument("--list-devices", action="store_true")
     parser.add_argument("--device", default="default", help="loopback index from --list-devices")
     parser.add_argument("--seconds", type=float, default=30)
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--local-files-only", action="store_true",
                         help="require a complete local --model directory; never download model files")
+    # [설정] --language: "ko", --compute-device: "auto", --compute-type: None, --hotwords: "" (인식 옵션).
     parser.add_argument("--language", default="ko", help="ko, en, or auto")
     parser.add_argument("--compute-device", default="auto", choices=["auto", "cpu", "cuda"])
     parser.add_argument("--compute-type", default=None)
@@ -44,7 +56,8 @@ def main(argv=None):
     transcriber = FasterWhisperTranscriber(
         args.model, device=args.compute_device, compute_type=args.compute_type,
         language=None if args.language == "auto" else args.language,
-        download_root=".audio_processing/models/whisper",
+        # [설정] download_root: .cache/models/whisper (Whisper 모델 저장 경로; 상대 경로).
+        download_root=".cache/models/whisper",
         hotwords=args.hotwords,
         on_status=lambda text: print(text, flush=True),
         local_files_only=args.local_files_only,
@@ -69,6 +82,7 @@ def main(argv=None):
         captured_samples = len(samples)
         # [다른 파일] __main__.main → chunks.Chunker(): Chunker 객체·설정 준비.
         # [다른 파일] __main__.main → chunks.TranscriptAssembler(): TranscriptAssembler 객체·설정 준비.
+        # [설정] holdback_ms: 250 (파일 검사에서도 실시간과 동일한 경계 단어 보류값).
         chunker, assembler = Chunker(), TranscriptAssembler(session_id, holdback_ms=250)
         chunks = []
         for offset in range(0, len(samples), SAMPLE_RATE//10):

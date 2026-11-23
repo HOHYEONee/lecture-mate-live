@@ -1,23 +1,41 @@
+"""Optional production backends; model imports happen only when requested."""
+
+# [주요 설정 목록] 위치(함수) | 파라미터: 값 (설명)
+# DEFAULT_MODEL: "large-v3-turbo" (기본 Whisper 모델; small/medium 등 선택 가능)
+# FasterWhisperTranscriber.__init__ | device: "auto" (GPU 우선, 실패 시 CPU), compute_type: None (자동 정밀도)
+# FasterWhisperTranscriber.__init__ | language: "ko" (한국어; None은 자동 감지), hotwords: "" (인식 용어 힌트)
+# FasterWhisperTranscriber.__init__ | download_root: None (호출자가 저장 위치 지정), local_files_only: False (다운로드 허용)
+# FasterWhisperTranscriber._load | precision: GPU float16 / CPU int8 (기본 계산 정밀도)
+# FasterWhisperTranscriber.set_context | context_chars: 200 (최근 전사 문맥 길이)
+# FasterWhisperTranscriber._decode | beam_size: 5 (탐색 후보 수), temperature: 0.0 (결정적 디코딩)
+# FasterWhisperTranscriber._decode | word_timestamps: True (단어별 시간), vad_filter: True (음성 구간 감지)
+# FasterWhisperTranscriber._decode | min_silence_duration_ms: 500, speech_pad_ms: 300, min_speech_duration_ms: 100 (VAD 기준)
+# FasterWhisperTranscriber._decode | condition_on_previous_text: False (내부 연속 문맥 사용 안 함; initial_prompt는 별도)
+# WasapiLoopbackSource.__init__ | buffer_blocks: 100 (오디오 수집 버퍼 최대 블록 수)
+# WasapiLoopbackSource.prepare | frames_per_buffer: rate // 10 (약 100ms 수집 블록; 장치 기본 샘플레이트 사용)
+# WasapiLoopbackSource.read | timeout: 0.05초 (새 블록 대기 시간), SAMPLE_RATE: 16000Hz (Whisper 입력 규격)
+
 from math import gcd
 from pathlib import Path
 from queue import Empty, Full, Queue
 import sys
 from threading import Lock
 from time import monotonic
+
 import numpy as np
+
 from .chunks import AudioBlock, SAMPLE_RATE, SpeechSpan, SpeechWord
 from .runtime import prepare_cuda_libraries
 
-
-# tiny, small, midium, largev1..v3..turbo, & distil 등등 모델 존재
-#  midium 이상으로 돌리면 더미 드라이버로 돌렸을 때 전사에만 15초이상 딜레이가 걸림 (u7 255h 16gb 내장 그래픽 기준)
-# 일단 midium만 되도 성능 괞찬은데 경량화 모델(단 영어 전용)써보거나 효율적으로 돌릴 방법 찾아야 될듯
-# 강의가 영어 강의면 할만 할지도 
-DEFAULT_MODEL = "small"
+# [설정] DEFAULT_MODEL: "large-v3-turbo" (기본 음성 인식 모델)
+DEFAULT_MODEL = "large-v3-turbo"
 
 
 class FasterWhisperTranscriber:
-    # [외부 호출] 사용할 모델·장치·언어·다운로드 경로·오프라인 실행 설정을 저장한다. 기본적으로 온라인임 offline은 혹시 몰라서 설정(model 파일 있어야함)
+    # [설정] model: DEFAULT_MODEL, device: "auto", compute_type: None (모델·실행 장치·정밀도).
+    # [설정] language: "ko", hotwords: "" (인식 언어와 용어 힌트).
+    # [설정] download_root: None, local_files_only: False (모델 저장 위치와 자동 다운로드 허용 여부).
+    # [외부 호출] 사용할 모델·장치·언어·다운로드 경로·오프라인 실행 설정을 저장한다.
     def __init__(self, model=DEFAULT_MODEL, *, device="auto", compute_type=None,
                  language="ko", download_root=None, hotwords="", on_status=None,
                  local_files_only=False):
@@ -47,6 +65,7 @@ class FasterWhisperTranscriber:
 
     # [내부] 전달받은 확정 전사의 마지막 200자를 다음 인식의 힌트로 저장한다.
     def set_context(self, text):
+        # [설정] context_chars: 200 (최근 확정 전사에서 인식 힌트로 넘기는 최대 글자 수).
         self._context = text.strip()[-200:]
 
     # [내부 / 외부(faster_whisper.WhisperModel)] 로컬 파일·정밀도를 확인해 모델을 불러오며 허용 시 다운로드한다.
@@ -64,6 +83,7 @@ class FasterWhisperTranscriber:
                 raise FileNotFoundError("Offline model files missing: " + ", ".join(missing))
             model = str(folder.resolve())
         from faster_whisper import WhisperModel
+        # [설정] precision: "float16"(CUDA) / "int8"(CPU); compute_type 지정 시 우선 사용.
         precision = self.compute_type or ("float16" if device == "cuda" else "int8")
         if self.device == "auto" and device == "cpu" and precision in ("float16", "int8_float16"):
             precision = "int8"
@@ -72,7 +92,7 @@ class FasterWhisperTranscriber:
                                   local_files_only=self.local_files_only)
         self.actual_device, self.actual_compute_type = device, precision
 
-    # [내부] GPU 사용 가능 여부를 확인하고 모델을 준비하며 자동 GPU 준비 실패 시 CPU로 전환
+    # [내부] GPU 사용 가능 여부를 확인하고 모델을 준비하며 자동 GPU 준비 실패 시 CPU로 전환한다.
     def prepare(self):
         if self._model is None:
             # [다른 파일] backends.FasterWhisperTranscriber.prepare → runtime.prepare_cuda_libraries: 현재 프로세스의 GPU 라이브러리 경로 준비.
@@ -96,9 +116,11 @@ class FasterWhisperTranscriber:
             self._notice(f"인식 준비 완료: {self.model_name} · {'GPU' if self.actual_device == 'cuda' else 'CPU'}")
 
     # [내부 / 외부(WhisperModel.transcribe)] 음성을 인식해 텍스트와 단어별 상대 시간을 SpeechSpan으로 반환한다.
-    #만질만한 파라미터 beam_size= 문장후보 탐색 폭 ,min_silence_duration_ms= 발화 구간 분리 침묵 시간 이거 이상 발화가 이어지지 않으면 분리
-    # speech_pad_ms = 발화 앞뒤로 패딩 넣기(짤림 방지) , min_speech_duration_ms = 발화가 이 이상 이어지지 않으면 발화로 여기지 않음 (음, 오 , 아 예, 혹은 기타 잡음 들어가는거 예방)
-    def _decode(self, samples): 
+    def _decode(self, samples):
+        # [설정] beam_size: 5 (후보 탐색 폭; 증가 시 인식 시간 증가 가능), temperature: 0.0 (결정적 인식).
+        # [설정] word_timestamps: True (중복 제거에 필요한 단어 시간), vad_filter: True (무음 구간 제거).
+        # [설정] min_silence_duration_ms: 500 (무음 분리 기준), speech_pad_ms: 300 (발화 앞뒤 여유), min_speech_duration_ms: 100 (최소 발화 길이).
+        # [설정] condition_on_previous_text: False (Whisper 내부 이전 결과 의존 억제), initial_prompt: 최근 확정 문맥, hotwords: 용어 힌트.
         segments, _ = self._model.transcribe(
             samples, task="transcribe", language=self.language, beam_size=5,
             temperature=0.0, word_timestamps=True, vad_filter=True,
@@ -123,8 +145,8 @@ class FasterWhisperTranscriber:
             # [같은 파일] FasterWhisperTranscriber.transcribe → FasterWhisperTranscriber._decode: 음성을 텍스트·단어 시간으로 인식.
             return self._decode(samples)
         except (RuntimeError, OSError) as exc:
-
-            # 첫 실행시  CUDA libraries/kernels이 로드 안되면 Cpu로 대신 로드 함 초반 약간의 오디오 손실 발생 가능함
+            # Some CUDA libraries/kernels are not loaded until first inference.
+            # Preserve this chunk and retry it on CPU, rather than losing audio.
             if self.device != "auto" or self.actual_device != "cuda":
                 raise
             self.fallback_reason = str(exc)
@@ -142,6 +164,7 @@ class FasterWhisperTranscriber:
 class WasapiLoopbackSource:
     """Callback capture prevents silence from blocking pause/stop indefinitely."""
 
+    # [설정] buffer_blocks: 100 (콜백 수집 버퍼 최대 길이; 포화 시 오류를 알림).
     # [내부] 오디오 버퍼 큐와 장치·스트림·오류 상태를 초기화한다.
     def __init__(self, buffer_blocks=100):
         self._audio = self._stream = None
@@ -152,9 +175,6 @@ class WasapiLoopbackSource:
         self._stream_lock = Lock()
 
     # [외부 호출 / 외부(PyAudio.get_loopback_device_info_generator)] 앱이 선택할 시스템 출력 장치 목록을 반환한다.
-    # 나중에 출력되는 오디오 디바이스만 따로 설정 가능하게 -> 설정에서 앱별 오디오 출력 장치는 따로 설정해서 다른 프로그램에서 들어올 수 있는 노이즈 방지
-    # 근데 강의 들으면서 소리 들을 건데 따로 설정하는건 의미가 있나 웬만해선 모두 같은 출력장치를 쓸텐데 이거+강의 만 다른 출력장치 설정하는 것도 귀찮지 않나
-    # 미확정 
     @staticmethod
     def list_devices():
         if sys.platform != "win32":
@@ -184,6 +204,7 @@ class WasapiLoopbackSource:
             self._failure = None
             self._overflow = None
             self._blocks = Queue(maxsize=self._blocks.maxsize)
+            # [설정] frames_per_buffer: rate // 10 (장치 샘플레이트 기준 약 100ms마다 오디오 수신).
             # [같은 파일 / 콜백 등록] WasapiLoopbackSource.prepare → WasapiLoopbackSource._callback: 장치 오디오를 내부 버퍼에 보관.
             self._stream = self._audio.open(
                 format=pa.paFloat32, channels=self.channels, rate=self.rate,
@@ -225,6 +246,7 @@ class WasapiLoopbackSource:
     # [내부 / 외부(scipy.signal.resample_poly)] 버퍼 오디오를 16kHz 모노로 변환해 원래 취득 시각과 반환한다.
     def read(self):
         try:
+            # [설정] timeout: 0.05초 (신규 오디오 블록 대기 한도).
             data, start = self._blocks.get(timeout=0.05)
         except Empty:
             if self._overflow is not None:
@@ -236,6 +258,7 @@ class WasapiLoopbackSource:
                 error, self._failure = self._failure, None
                 raise error
             return None
+        # [설정] 채널: 모노 평균, SAMPLE_RATE: 16000Hz (Whisper 입력 규격; 단독 변경 금지).
         samples = np.frombuffer(data, dtype=np.float32).reshape(-1, self.channels).mean(axis=1)
         if self.rate != SAMPLE_RATE:
             from scipy.signal import resample_poly

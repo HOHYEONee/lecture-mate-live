@@ -1,6 +1,16 @@
+"""AudioProcessorAPI implementation with independent capture and ASR workers."""
+
+# [주요 설정 목록] 위치(함수) | 파라미터: 값 (설명)
+# AudioProcessor.__init__ | period_seconds: 5.0 (새 오디오 전사 주기), overlap_seconds: 1.0 (직전 오디오 중첩 길이)
+# AudioProcessor.__init__ | max_pending_chunks: 12 (전사 대기 청크 상한), delivery_timeout: 5.0초 (외부 큐 전달 대기)
+# AudioProcessor.__init__ | boundary_holdback_ms: 250 (청크 끝 단어 확정 보류 시간), device_id: "default" (기본 출력 장치)
+# AudioProcessor._deliver | context_chars: 200 (다음 전사에 넘길 최근 문맥; backends.set_context와 함께 조정)
+# AudioProcessor.pause | join timeout: 5초 (수집 워커 종료 확인 대기)
+
 from collections import deque
 from queue import Full, Queue
 from threading import Event, RLock, Thread
+
 from interface_spec.contracts import ModuleError, ModuleName
 from .backends import FasterWhisperTranscriber, WasapiLoopbackSource
 from .chunks import Chunker, TranscriptAssembler
@@ -9,43 +19,39 @@ _END_CAPTURE = object()
 
 
 class AudioProcessor:
-    #  period_seconds = 오디오 처리 주기 ,overlap_seconds = 이전 청크와 겹치는 오디오 길이
-    #  max_pending_chunks = 전사 대기 최대 길이 초과시 오류 발생
-    #  delivery_timeout = 외부 큐가 꽉 찼을 때 결과 전달을 기다리는 시간
-    # boundary_holdback_ms = 청크 끝부분 단어를 다음 구간과 대조하도록 보류하는 범위
-    # [외부 호출] 수집기·전사기, 처리 주기·내부 큐·오류 보관 상태 준비.
+    # [설정] period_seconds: 5.0 (전사 주기), overlap_seconds: 1.0 (직전 청크의 중첩 오디오).
+    # [설정] max_pending_chunks: 12 (전사 대기 상한; 초과 시 오류), delivery_timeout: 5.0초 (출력 큐에 전달할 최대 대기 시간).
+    # [설정] boundary_holdback_ms: 250 (청크 끝부분 단어를 다음 구간과 대조하도록 보류).
+    # [외부 호출] 수집기·전사기와 처리 주기·내부 큐·오류 보관 상태를 준비한다.
     def __init__(self, *, source=None, transcriber=None, period_seconds=5.0,
                  overlap_seconds=1.0, max_pending_chunks=12, delivery_timeout=5.0,
                  boundary_holdback_ms=250):
         if max_pending_chunks < 1 or delivery_timeout <= 0:
             raise ValueError("backlog and delivery timeout must be positive")
-        
         # [다른 파일] processor.AudioProcessor.__init__ → backends.WasapiLoopbackSource(): WasapiLoopbackSource 객체·설정 준비.
         self._source = source if source is not None else WasapiLoopbackSource()
-
         # [다른 파일] processor.AudioProcessor.__init__ → backends.FasterWhisperTranscriber(): FasterWhisperTranscriber 객체·설정 준비.
         self._transcriber = transcriber if transcriber is not None else FasterWhisperTranscriber()
         self._period = period_seconds
         self._overlap = overlap_seconds
-
         # [다른 파일] processor.AudioProcessor.__init__ → chunks.Chunker(): Chunker 객체·설정 준비.
         Chunker(period_seconds, overlap_seconds)  # validate before starting workers
         self._max_pending = max_pending_chunks
         self._delivery_timeout = delivery_timeout
         self._boundary_holdback_ms = boundary_holdback_ms
+        # [설정] device_id: "default" (기본 WASAPI 출력 사용; set_device로 변경).
         self._device_id = "default"
         self._state = "idle"
         self._lock = RLock()
         self._halt = Event()
         self._capture_thread = self._worker = None
-
         # Failed jobs/events remain available for explicit recovery, never discarded.
         self.failed_chunks = deque()
         self.undelivered_events = deque()
         self.errors = []
 
 
-    # [외부 호출] 앱에서 받은 출력 장치 ID를 저장 실행중 변경 차단.
+    # [외부 호출] 앱에서 받은 출력 장치 ID를 저장하며 실행 중에는 변경을 막는다.
     def set_device(self, device_id: str) -> None:
         with self._lock:
             if self._state != "idle":
@@ -65,7 +71,6 @@ class AudioProcessor:
             self._jobs = Queue()
             # [다른 파일] processor.AudioProcessor.start → chunks.Chunker(): Chunker 객체·설정 준비.
             self._chunker = Chunker(self._period, self._overlap)
-
             # [다른 파일] processor.AudioProcessor.start → chunks.TranscriptAssembler(): TranscriptAssembler 객체·설정 준비.
             self._assembler = TranscriptAssembler(session_id, holdback_ms=self._boundary_holdback_ms)
             self._context_text = ""
@@ -171,6 +176,7 @@ class AudioProcessor:
                     # [같은 파일] AudioProcessor._deliver → AudioProcessor._report: 오류 기록 및 앱에 통보.
                     self._report("INGEST_QUEUE_FULL", RuntimeError("transcript retained for recovery"))
                     self._halt.set()
+            # [설정] context_chars: 200 (다음 Whisper 인식 힌트; backends.set_context와 동일하게 유지).
             self._context_text = (self._context_text + " " + event.text).strip()[-200:]
         if events and hasattr(self._transcriber, "set_context"):
             # [다른 파일 / 기본 구현] processor.AudioProcessor._deliver → backends.FasterWhisperTranscriber.set_context: 다음 인식에 쓸 확정 문맥 반영.
@@ -219,6 +225,7 @@ class AudioProcessor:
             except Exception as exc:
                 # [같은 파일] AudioProcessor.pause → AudioProcessor._report: 오류 기록 및 앱에 통보.
                 self._report("AUDIO_STOP_FAILED", exc)
+            # [설정] join timeout: 5초 (수집 워커의 일시정지 확인 대기 한도).
             self._capture_thread.join(timeout=5)
             if self._capture_thread.is_alive():
                 raise RuntimeError("audio capture did not acknowledge pause")

@@ -1,3 +1,5 @@
+"""Make optional project-local NVIDIA runtime wheels visible on Windows."""
+
 import os
 from pathlib import Path
 import sys
