@@ -1,0 +1,7 @@
+-c constraints-win-py312.txt
+-r requirements-common-win-py312.txt
+
+# The GPU wheel must first be installed from Paddle's CUDA 12.6 index.
+paddlepaddle-gpu==3.3.1
+paddleocr==3.3.1
+paddlex==3.3.13

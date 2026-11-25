@@ -1,0 +1,26 @@
+# Candidate shared pins for Python 3.12 x64 on Windows.
+# These are proposed pins, not a resolver-produced or GPU-tested lock file.
+numpy==2.2.6
+opencv-contrib-python==4.10.0.84
+
+# GUI and model stack.
+PySide6>=6.6,<7
+openai==3.49.0
+torch==2.14.1
+sentence-transformers==6.2.0
+transformers==5.0.0
+huggingface-hub==1.3.0
+
+# Paddle GPU stack (install the GPU wheel from Paddle's cu126 index first).
+paddlepaddle-gpu==3.3.1
+paddleocr==3.3.1
+paddlex==3.3.13
+
+# Audio and RAG stack.
+scipy==1.18.1
+faster-whisper==1.2.1
+ctranslate2==4.9.1
+av==15.1.0
+PyAudioWPatch==0.2.12.9; sys_platform == "win32"
+kiwipiepy==0.24.1
+kiwipiepy_model==0.24.0

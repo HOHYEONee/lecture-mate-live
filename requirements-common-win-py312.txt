@@ -1,0 +1,5 @@
+# Shared runtime dependencies for the Windows/Python 3.12 integration.
+# Keep one NumPy build and one OpenCV distribution in the environment.
+numpy==2.2.6
+opencv-contrib-python==4.10.0.84
+mss>=10,<11

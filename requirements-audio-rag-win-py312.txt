@@ -1,0 +1,10 @@
+-c constraints-win-py312.txt
+-r requirements-common-win-py312.txt
+
+scipy==1.18.1
+faster-whisper==1.2.1
+ctranslate2==4.9.1
+av==15.1.0
+PyAudioWPatch==0.2.12.9; sys_platform == "win32"
+kiwipiepy==0.24.1
+kiwipiepy_model==0.24.0

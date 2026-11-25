@@ -187,6 +187,11 @@ class DesktopController(QObject):
         if self._state in (SessionState.RUNNING, SessionState.PAUSED):
             self.frame_processor.set_region(region)
 
+    def clear_capture_region(self) -> None:
+        if self._state != SessionState.IDLE:
+            raise RuntimeError("capture region can only be cleared while idle")
+        self._region = None
+
     def pause_session(self) -> None:
         if self._state != SessionState.RUNNING or self._session is None:
             raise RuntimeError("only a running session can be paused")
@@ -347,7 +352,55 @@ class DesktopController(QObject):
 
 
 def default_controller(parent: QObject | None = None) -> DesktopController:
+    """Build the lifecycle-only controller used by tests and UI previews."""
     from .adapters import protocol_adapters
 
     frame, audio, context = protocol_adapters()
     return DesktopController(frame, audio, context, parent=parent)
+
+
+def production_controller(parent: QObject | None = None) -> DesktopController:
+    """Compose the implemented modules while keeping heavy models lazy and CPU-safe."""
+    import os
+
+    from context_qa import create_context_qa
+    from frame_processing import FrameProcessor
+    from .disabled import DisabledAudioProcessor
+
+    classifier_mode = os.environ.get("CLUE_FRAME_CLASSIFIER", "cpu").strip().lower()
+    if classifier_mode == "cpu":
+        # This existing component is an experimental, lower-accuracy offline fallback.
+        from frame_processing.experiments.heuristic import LayoutHeuristicClassifier
+
+        frame = FrameProcessor(classifier_factory=LayoutHeuristicClassifier)
+    elif classifier_mode == "gpu":
+        frame = FrameProcessor()
+    else:
+        raise ValueError("CLUE_FRAME_CLASSIFIER must be 'cpu' or 'gpu'")
+
+    audio_enabled = os.environ.get("CLUE_ENABLE_AUDIO", "0").strip().lower() in {"1", "true", "yes"}
+    if audio_enabled:
+        from audio_processing import AudioProcessor
+        from audio_processing.backends import FasterWhisperTranscriber
+
+        audio_device = os.environ.get("CLUE_ASR_DEVICE", "cpu").strip().lower()
+        if audio_device not in {"cpu", "cuda", "auto"}:
+            raise ValueError("CLUE_ASR_DEVICE must be 'cpu', 'cuda', or 'auto'")
+        transcriber = FasterWhisperTranscriber(
+            model=os.environ.get("CLUE_ASR_MODEL", "large-v3-turbo"),
+            device=audio_device,
+        )
+        audio = AudioProcessor(transcriber=transcriber)
+    else:
+        audio = DisabledAudioProcessor()
+
+    reranker = None
+    if os.environ.get("CLUE_USE_KO_RERANKER", "0").strip().lower() in {"1", "true", "yes"}:
+        from rag.reranker import KoReranker
+
+        reranker = KoReranker(device=os.environ.get("CLUE_RERANKER_DEVICE", "cpu"))
+    fake_llm = os.environ.get("CLUE_FAKE_LLM", "1").strip().lower() not in {"0", "false", "no"}
+    context = create_context_qa(fake_llm=fake_llm, rag="hybrid", reranker=reranker)
+    controller = DesktopController(frame, audio, context, parent=parent)
+    controller.audio_enabled = audio_enabled
+    return controller

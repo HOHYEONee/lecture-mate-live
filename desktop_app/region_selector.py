@@ -15,6 +15,10 @@ class RegionSelector(QWidget):
     cancelled = Signal()
     finished = Signal()
 
+    @staticmethod
+    def _monitor_key(name: str) -> str:
+        return name.rsplit("\\", 1)[-1].casefold()
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowFlags(
@@ -81,7 +85,7 @@ class RegionSelector(QWidget):
                 info.cbSize = ctypes.sizeof(MonitorInfoEx)
                 if get_info(handle, ctypes.byref(info)):
                     bounds = info.rcMonitor
-                    rects[info.szDevice.casefold()] = (
+                    rects[RegionSelector._monitor_key(info.szDevice)] = (
                         bounds.left,
                         bounds.top,
                         bounds.right,
@@ -103,13 +107,34 @@ class RegionSelector(QWidget):
                 key=lambda item: (item.geometry().center() - point).manhattanLength(),
             )
         geometry = screen.geometry()
-        ratio = screen.devicePixelRatio()
-        native = self._physical_monitor_rects.get(screen.name().casefold())
-        physical_left = native[0] if native else round(geometry.left() * ratio)
-        physical_top = native[1] if native else round(geometry.top() * ratio)
+        native = self._physical_monitor_rects.get(self._monitor_key(screen.name()))
+        return self._logical_to_physical(
+            point,
+            geometry,
+            native,
+            screen.devicePixelRatio(),
+        )
+
+    @staticmethod
+    def _logical_to_physical(
+        point: QPoint,
+        geometry: QRect,
+        native: tuple[int, int, int, int] | None,
+        fallback_ratio: float,
+    ) -> QPoint:
+        if native is None:
+            physical_left = round(geometry.left() * fallback_ratio)
+            physical_top = round(geometry.top() * fallback_ratio)
+            scale_x = scale_y = fallback_ratio
+        else:
+            physical_left, physical_top, right, bottom = native
+            # Derive each axis independently. Windows can use non-uniform
+            # logical-to-native geometry across mixed-DPI monitor layouts.
+            scale_x = (right - physical_left) / geometry.width()
+            scale_y = (bottom - physical_top) / geometry.height()
         return QPoint(
-            physical_left + round((point.x() - geometry.left()) * ratio),
-            physical_top + round((point.y() - geometry.top()) * ratio),
+            physical_left + round((point.x() - geometry.left()) * scale_x),
+            physical_top + round((point.y() - geometry.top()) * scale_y),
         )
 
     def paintEvent(self, _event) -> None:  # noqa: N802 - Qt virtual method name

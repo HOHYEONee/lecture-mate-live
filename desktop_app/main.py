@@ -6,13 +6,13 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
-from .controller import default_controller
+from .controller import production_controller
 from .main_window import MainWindow
 
 
 def main() -> int:
     app = QApplication(sys.argv)
-    controller = default_controller()
+    controller = production_controller()
     window = MainWindow(controller)
     window.show()
     return app.exec()

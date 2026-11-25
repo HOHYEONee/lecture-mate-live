@@ -1,0 +1,4 @@
+# Shared capture and SSIM dependencies.
+numpy>=1.26,<3
+opencv-contrib-python==4.10.0.84
+mss>=10,<11

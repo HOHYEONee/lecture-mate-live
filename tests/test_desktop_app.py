@@ -11,7 +11,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QEventLoop, QPoint, QTimer, Qt
+from PySide6.QtCore import QEventLoop, QPoint, QRect, QTimer, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -292,6 +292,24 @@ class DesktopControllerTests(unittest.TestCase):
         QTest.mouseClick(window.stop_button, Qt.MouseButton.LeftButton)
         self.wait_operation(controller, "stop")
         self.assertEqual(window.state_label.text(), "IDLE")
+        self.assertIsNone(window._region)
+        self.assertFalse(window.start_button.isEnabled())
+        self.assertEqual(window.region_label.text(), "선택된 영역 없음")
+        self.assertEqual(window.conversation.toPlainText(), "")
+        self.assertEqual(window.elapsed_label.text(), "00:00:00")
+
+    def test_region_selector_maps_logical_points_to_native_monitor_pixels(self) -> None:
+        logical_geometry = QRect(0, 0, 1920, 1080)
+        native_bounds = (0, 0, 3840, 2160)
+        mapped = RegionSelector._logical_to_physical(
+            QPoint(960, 540), logical_geometry, native_bounds, 1.0
+        )
+        self.assertEqual(mapped, QPoint(1920, 1080))
+
+        fallback_mapped = RegionSelector._logical_to_physical(
+            QPoint(960, 540), logical_geometry, None, 2.0
+        )
+        self.assertEqual(fallback_mapped, QPoint(1920, 1080))
 
     def test_window_renders_streamed_answer_deltas(self) -> None:
         class StreamingContext(MockContextQA):

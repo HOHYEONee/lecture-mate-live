@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 from PySide6.QtCore import QTimer, Qt, Slot
-from PySide6.QtGui import QFont, QFontDatabase, QTextCursor
+from PySide6.QtGui import QFont, QFontDatabase, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -43,6 +43,8 @@ class MainWindow(QMainWindow):
         self._awaiting_question_id: str | None = None
         self._answer_text = ""
         self._busy = False
+        self._frame_preview_path: Path | None = None
+        self._frame_pixmap = QPixmap()
 
         self.setWindowTitle("CLUE — Lecture Mate Live")
         self.resize(1180, 760)
@@ -160,6 +162,7 @@ class MainWindow(QMainWindow):
         self.cancel_answer_button.clicked.connect(self._cancel_answer)
         controller.state_changed.connect(self._set_state)
         controller.busy_changed.connect(self._set_busy)
+        controller.operation_completed.connect(self._on_operation_completed)
         controller.error_raised.connect(self._show_error)
         controller.answer_event_received.connect(self._handle_answer_event)
 
@@ -167,6 +170,10 @@ class MainWindow(QMainWindow):
         self._display_timer.setInterval(250)
         self._display_timer.timeout.connect(self._refresh_elapsed)
         self._display_timer.start()
+        self._frame_timer = QTimer(self)
+        self._frame_timer.setInterval(750)
+        self._frame_timer.timeout.connect(self._refresh_preview)
+        self._frame_timer.start()
         self._set_state(controller.state)
         self._update_buttons()
 
@@ -204,11 +211,14 @@ class MainWindow(QMainWindow):
     def _region_selected(self, region: CaptureRegion) -> None:
         self._region = region
         self.controller.set_capture_region(region)
+        self._frame_preview_path = None
+        self._frame_pixmap = QPixmap()
+        self.preview.setPixmap(self._frame_pixmap)
         self.region_label.setText(
             f"{region.left}, {region.top}  ·  {region.width} × {region.height}px"
         )
         self.preview.setText(
-            "캡처 영역을 선택했습니다. 프레임 모듈 연결 후 미리보기가 표시됩니다."
+            "영역 선택 완료 — 수집을 시작하면 대표 프레임이 세션에 저장됩니다."
         )
         self.collection_label.setText("영역 선택 완료")
         self._update_buttons()
@@ -331,7 +341,11 @@ class MainWindow(QMainWindow):
                 self._set_question_busy(False)
         labels = {
             SessionState.IDLE: "준비됨 — 영역을 선택해 시작하세요",
-            SessionState.RUNNING: "화면·시스템 오디오 수집 중",
+            SessionState.RUNNING: (
+                "화면 수집 중 · 오디오 꺼짐"
+                if not getattr(self.controller, "audio_enabled", True)
+                else "화면·시스템 오디오 수집 중"
+            ),
             SessionState.PAUSING: "수집 일시정지 중…",
             SessionState.PAUSED: "수집 일시정지됨",
             SessionState.STOPPING: "남은 작업 정리 중…",
@@ -343,6 +357,27 @@ class MainWindow(QMainWindow):
     @Slot(bool)
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
+        self._update_buttons()
+
+    @Slot(str)
+    def _on_operation_completed(self, operation: str) -> None:
+        if operation != "stop":
+            return
+        self.controller.clear_capture_region()
+        self._region = None
+        self._frame_preview_path = None
+        self._frame_pixmap = QPixmap()
+        self.preview.setPixmap(self._frame_pixmap)
+        self.preview.setText("강의 화면 영역을 선택해 주세요")
+        self.region_label.setText("선택된 영역 없음")
+        self.conversation.clear()
+        self.question_input.clear()
+        self._draft_id = None
+        self._awaiting_question_id = None
+        self._answer_text = ""
+        self._set_question_busy(False)
+        self.collection_label.setText("대기 중 · 영역을 선택해 시작하세요")
+        self._refresh_elapsed()
         self._update_buttons()
 
     def _update_buttons(self) -> None:
@@ -359,6 +394,34 @@ class MainWindow(QMainWindow):
         )
         self.question_input.setEnabled(state == SessionState.RUNNING and self._awaiting_question_id is None)
         self.send_button.setEnabled(state == SessionState.RUNNING and self._awaiting_question_id is None)
+
+    @Slot()
+    def _refresh_preview(self) -> None:
+        session = self.controller.session
+        if session is None:
+            return
+        frame_dir = session.session_dir / "frames"
+        try:
+            latest = max(frame_dir.glob("*.jpg"), key=lambda path: path.stat().st_mtime_ns)
+        except (OSError, ValueError):
+            if self._frame_pixmap.isNull():
+                self.preview.setText("대표 프레임 수집을 기다리는 중…")
+            return
+        if latest != self._frame_preview_path:
+            pixmap = QPixmap(str(latest))
+            if pixmap.isNull():
+                return
+            self._frame_preview_path = latest
+            self._frame_pixmap = pixmap
+        if not self._frame_pixmap.isNull():
+            self.preview.setText("")
+            self.preview.setPixmap(
+                self._frame_pixmap.scaled(
+                    self.preview.size(),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
 
     @Slot()
     def _refresh_elapsed(self) -> None:

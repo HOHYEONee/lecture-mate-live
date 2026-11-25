@@ -1,0 +1,6 @@
+# Preserve the existing GUI dependency contract.
+-r requirements-desktop.txt
+-c constraints-win-py312.txt
+
+# Context QA's documented SDK dependency; no Q&A requirements file exists yet.
+openai==3.49.0
