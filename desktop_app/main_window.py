@@ -3,19 +3,20 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from PySide6.QtCore import QTimer, Qt, Slot
-from PySide6.QtGui import QFont, QFontDatabase, QPixmap, QTextCursor
+from PySide6.QtGui import QFont, QFontDatabase, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMainWindow,
-    QPlainTextEdit,
     QPushButton,
     QSplitter,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -42,6 +43,7 @@ class MainWindow(QMainWindow):
         self._draft_id: str | None = None
         self._awaiting_question_id: str | None = None
         self._answer_text = ""
+        self._conversation_markdown = ""
         self._busy = False
         self._frame_preview_path: Path | None = None
         self._frame_pixmap = QPixmap()
@@ -65,7 +67,7 @@ class MainWindow(QMainWindow):
             QPushButton#stop { background: #ed5151; color: white; border: none; font-weight: 600; }
             QPushButton:disabled { color: #9aa8b9; background: #edf1f6; }
             QLineEdit { background: white; border: 1px solid #cfdaea; border-radius: 8px; padding: 10px; }
-            QPlainTextEdit { background: white; border: 1px solid #e2e9f2; border-radius: 8px; padding: 8px; }
+            QTextEdit { background: white; border: 1px solid #e2e9f2; border-radius: 8px; padding: 8px; }
             """
         )
 
@@ -80,7 +82,7 @@ class MainWindow(QMainWindow):
         self.preview.setStyleSheet(
             "background:#152231;color:#dbe6f4;border-radius:10px;font-size:17px;padding:24px;"
         )
-        self.conversation = QPlainTextEdit()
+        self.conversation = QTextEdit()
         self.conversation.setReadOnly(True)
         self.conversation.setPlaceholderText("질문과 답변이 여기에 표시됩니다.")
 
@@ -283,7 +285,7 @@ class MainWindow(QMainWindow):
         self._draft_id = None
         self._awaiting_question_id = question_id
         self._answer_text = ""
-        self._append_text(f"\n나: {text}\nCLUE: ")
+        self._append_text(f"\n\n**나:** {text}\n\n**CLUE:** ")
         self.question_input.clear()
         self._set_question_busy(True)
 
@@ -309,20 +311,31 @@ class MainWindow(QMainWindow):
             self._awaiting_question_id = None
             self._set_question_busy(False)
         elif isinstance(event, AnswerCancelled):
-            self._append_text("\nAnswer cancelled.\n")
+            self._append_text("\n\n응답이 취소되었습니다.\n")
             self._awaiting_question_id = None
             self._set_question_busy(False)
         elif isinstance(event, AnswerFailed):
-            self._append_text(f"\nAnswer unavailable: {event.message}\n")
+            self._append_text(f"\n\n답변을 가져오지 못했습니다: {event.message}\n")
             self._awaiting_question_id = None
             self._set_question_busy(False)
 
     def _append_text(self, text: str) -> None:
-        cursor = self.conversation.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        cursor.insertText(text)
-        self.conversation.setTextCursor(cursor)
-        self.conversation.ensureCursorVisible()
+        scrollbar = self.conversation.verticalScrollBar()
+        follow_output = scrollbar.value() >= scrollbar.maximum() - 2
+        self._conversation_markdown += text
+        self.conversation.setMarkdown(self._normalize_markdown(self._conversation_markdown))
+        if follow_output:
+            scrollbar.setValue(scrollbar.maximum())
+
+    @staticmethod
+    def _normalize_markdown(text: str) -> str:
+        # Model output sometimes over-escapes Markdown punctuation and TeX
+        # delimiters. Normalize those while preserving ordinary backslashes.
+        text = re.sub(r"\\+([*])", r"\1", text)
+        text = re.sub(r"\\+_", "_", text)
+        text = re.sub(r"\\+\(", "`", text)
+        text = re.sub(r"\\+\)", "`", text)
+        return text.replace("&#x20;", " ")
 
     def _set_question_busy(self, busy: bool) -> None:
         self.question_input.setEnabled(not busy)
@@ -375,6 +388,7 @@ class MainWindow(QMainWindow):
         self._draft_id = None
         self._awaiting_question_id = None
         self._answer_text = ""
+        self._conversation_markdown = ""
         self._set_question_busy(False)
         self.collection_label.setText("대기 중 · 영역을 선택해 시작하세요")
         self._refresh_elapsed()

@@ -25,6 +25,7 @@ from desktop_app.adapters import (
 )
 from desktop_app.controller import DesktopController
 from desktop_app.controller import default_controller
+from desktop_app.main import load_project_environment
 from desktop_app.main_window import MainWindow
 from desktop_app.region_selector import RegionSelector
 from interface_spec.contracts import (
@@ -311,6 +312,22 @@ class DesktopControllerTests(unittest.TestCase):
         )
         self.assertEqual(fallback_mapped, QPoint(1920, 1080))
 
+    def test_project_environment_loader_reads_env_without_overriding_process_values(self) -> None:
+        variable = "CLUE_TEST_DOTENV_VALUE"
+        previous = os.environ.pop(variable, None)
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                Path(temp_dir, ".env").write_text(f"{variable}=from-file\n", encoding="utf-8")
+                load_project_environment(Path(temp_dir))
+                self.assertEqual(os.environ.get(variable), "from-file")
+                os.environ[variable] = "from-process"
+                load_project_environment(Path(temp_dir))
+                self.assertEqual(os.environ.get(variable), "from-process")
+        finally:
+            os.environ.pop(variable, None)
+            if previous is not None:
+                os.environ[variable] = previous
+
     def test_window_renders_streamed_answer_deltas(self) -> None:
         class StreamingContext(MockContextQA):
             def ask_async(self, request) -> None:
@@ -351,6 +368,18 @@ class DesktopControllerTests(unittest.TestCase):
         self.assertIsNone(window._awaiting_question_id)
         controller.stop_session()
         self.wait_operation(controller, "stop")
+
+    def test_window_renders_markdown_and_normalizes_escaped_math(self) -> None:
+        controller, *_ = self.make_controller()
+        window = MainWindow(controller)
+        self.addCleanup(window.close)
+
+        window._append_text(r"\*\*굵은 글씨\*\* 와 \\(R\\), \\(R\_{ij}\\)&#x20;")
+        rendered = window.conversation.toPlainText()
+        self.assertIn("굵은 글씨", rendered)
+        self.assertNotIn("**", rendered)
+        self.assertIn("R", rendered)
+        self.assertIn("R_{ij}", rendered)
 
     def test_drag_selector_emits_capture_region(self) -> None:
         selector = RegionSelector()

@@ -3,3 +3,4 @@
 numpy==2.2.6
 opencv-contrib-python==4.10.0.84
 mss>=10,<11
+python-dotenv==1.2.4
