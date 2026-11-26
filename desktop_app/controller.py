@@ -365,16 +365,18 @@ def production_controller(parent: QObject | None = None) -> DesktopController:
 
     from context_qa import create_context_qa
     from frame_processing import FrameProcessor
+    from frame_processing.capture import WindowsWindowCapture
     from .disabled import DisabledAudioProcessor
 
     classifier_mode = os.environ.get("CLUE_FRAME_CLASSIFIER", "cpu").strip().lower()
+    capture_backend = WindowsWindowCapture()
     if classifier_mode == "cpu":
         # This existing component is an experimental, lower-accuracy offline fallback.
         from frame_processing.experiments.heuristic import LayoutHeuristicClassifier
 
-        frame = FrameProcessor(classifier_factory=LayoutHeuristicClassifier)
+        frame = FrameProcessor(classifier_factory=LayoutHeuristicClassifier, backend=capture_backend)
     elif classifier_mode == "gpu":
-        frame = FrameProcessor()
+        frame = FrameProcessor(backend=capture_backend)
     else:
         raise ValueError("CLUE_FRAME_CLASSIFIER must be 'cpu' or 'gpu'")
 
@@ -402,5 +404,6 @@ def production_controller(parent: QObject | None = None) -> DesktopController:
     fake_llm = os.environ.get("CLUE_FAKE_LLM", "1").strip().lower() not in {"0", "false", "no"}
     context = create_context_qa(fake_llm=fake_llm, rag="hybrid", reranker=reranker)
     controller = DesktopController(frame, audio, context, parent=parent)
+    controller.window_capture_backend = capture_backend
     controller.audio_enabled = audio_enabled
     return controller

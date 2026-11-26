@@ -173,11 +173,14 @@ class RegionSelector(QWidget):
         end = event.globalPosition().toPoint()
         physical_start = self._physical_point(self._origin_global)
         physical_end = self._physical_point(end)
-        rect = QRect(physical_start, physical_end).normalized()
-        if rect.width() > 1 and rect.height() > 1:
+        left = min(physical_start.x(), physical_end.x())
+        top = min(physical_start.y(), physical_end.y())
+        width = abs(physical_end.x() - physical_start.x())
+        height = abs(physical_end.y() - physical_start.y())
+        if width > 1 and height > 1:
             self._selection_completed = True
             self.region_selected.emit(
-                CaptureRegion(rect.left(), rect.top(), rect.width(), rect.height())
+                CaptureRegion(left, top, width, height)
             )
             self.close()
         else:

@@ -80,7 +80,8 @@ class FramePipeline:
                 timestamp = self.clock.now_ms()  # immediately after grab, before processing/I/O
                 self._seq += 1
                 pixels = normalize_bgr(raw)
-                if pixels.shape[:2] != (self.region.height, self.region.width):
+                if (not getattr(self.backend, "dynamic_dimensions", False)
+                        and pixels.shape[:2] != (self.region.height, self.region.width)):
                     raise ValueError("backend image size differs from CaptureRegion")
                 return Observation(pixels, timestamp, self._seq)
             except Exception as exc:
