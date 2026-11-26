@@ -1,8 +1,4 @@
 # Windows x64 / Python 3.12 runtime set.
-# Preinstall the framework wheels using INSTALL-dependencies-win-py312.md.
--c constraints-win-py312.txt
--r requirements-common-win-py312.txt
--r requirements-desktop-win-py312.txt
+# GPU profile. Preinstall the framework wheels using the installation guide.
+-r requirements-integration-cpu-win-py312.txt
 -r requirements-frame-win-py312.txt
--r requirements-audio-rag-win-py312.txt
--r requirements-torch-win-py312.txt

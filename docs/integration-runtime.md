@@ -1,47 +1,41 @@
-# 1차 통합 실행 안내
+# CLUE 통합 실행
 
-통합 GUI는 공통 계약을 통해 `DesktopController` → 프레임/오디오 수집기 → 맥락 Q&A로 이벤트를 전달합니다. 프레임과 전사는 같은 세션 큐에 기록되고, Q&A 모듈이 SQLite 저장과 `HybridRAGIndex` 인덱싱을 맡습니다.
-
-## 실행
-
-[Windows GPU 의존성](../INSTALL-dependencies-win-py312.md)과 [모델 가중치](../frame_processing/README.md#가중치와-실행)를 준비한 뒤, PowerShell에서 프로젝트 루트의 Python 3.12 환경으로 실행합니다.
+Windows x64에서 [설치 절차](../INSTALL-dependencies-win-py312.md)를 완료한 뒤 실행합니다.
 
 ```powershell
-& .\.venv312\Scripts\python.exe -m desktop_app.main
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-demo.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-demo.ps1 -Diagnose
 ```
 
-기본 설정은 비디오 전용이며 PP-DocLayout_plus-L이 `gpu:0`에서 프레임을 분류합니다. 선택 영역 또는 프로그램 창의 최근 대표 프레임을 GUI에서 확인할 수 있습니다.
+`-Diagnose`는 그래픽카드, NVIDIA 드라이버·VRAM, 설치된 라이브러리, 가중치 유무와 프레임·전사
+워밍업 결과를 보여 줍니다. GUI에서는 수집 시작 시 프레임과 음성을 별개 프로세스에서 먼저
+검사합니다. 검사 종료 코드나 시간 초과도 기록합니다. 여러 CUDA 장치가 보이면 가용 VRAM
+정보를 CUDA 장치 UUID와 대응해 검사 순서를 정합니다.
 
-- `CLUE_FRAME_CLASSIFIER=gpu`는 기본값입니다. `cpu`를 명시하면 개발·테스트용 연결 요소 휴리스틱 분류기를 사용합니다.
-- `CLUE_ENABLE_AUDIO=0`: 기본 비디오 전용 모드입니다. 오디오 장치를 열지 않습니다.
-- `CLUE_ENABLE_AUDIO=1`: Faster-Whisper 오디오 수집을 함께 시작합니다. `CLUE_ASR_DEVICE=cpu`가 기본이며 `CLUE_ASR_MODEL` 기본값은 `large-v3-turbo`입니다. 첫 오디오 세션 시작 시 모델이 내려받아질 수 있습니다.
-- `CLUE_FAKE_LLM=1`: 외부 API 호출 없이 스트리밍 UI와 Q&A 흐름을 확인하는 테스트 답변을 사용합니다. 기본값입니다.
-- `CLUE_USE_KO_RERANKER=0`: Ko-Reranker를 끕니다. 켜면 CPU에서 실행하며, 첫 검색 시 모델 다운로드가 발생할 수 있습니다.
+## 실행 옵션
 
-CPU 개발 및 테스트는 별도 가상환경에서 실행할 수 있습니다.
+프로젝트 루트의 `.env` 또는 일시적인 PowerShell 환경변수에 설정합니다.
 
-```powershell
-py -3.12 -m venv .venv
-$python = '.\.venv\Scripts\python.exe'
-& $python -m pip install -r frame_processing/requirements-dev.txt -r requirements-desktop.txt python-dotenv
-& $python -m unittest discover -s tests -v
+| 이름 | 기본값 | 동작 |
+| --- | --- | --- |
+| `CLUE_FRAME_CLASSIFIER` | `auto` | GPU 워밍업 통과 시 PP-DocLayout_plus-L. 실패 시 원인을 표시하고 CPU 휴리스틱으로 전환. `cpu`·`gpu`로 강제 선택 |
+| `CLUE_FRAME_MODEL_DIR` | `models/PP-DocLayout_plus-L_infer` | GPU 분류 모델 경로 |
+| `CLUE_ENABLE_AUDIO` | `1` | `0`이면 화면 기반 수집·질의응답 |
+| `CLUE_ASR_DEVICE` | `auto` | GPU `large-v3-turbo` 우선. GPU 검사 실패 시 로컬 `base` INT8. `cpu`·`cuda`로 강제 선택 |
+| `CLUE_ASR_MODEL` | 장치에 따라 선택 | GPU 모델 또는 명시 장치용 모델명·로컬 경로 재정의. 자동 CPU 전환은 `base` 사용 |
+| `CLUE_USE_KO_RERANKER` | `0` | 멘토링 기본 구성에서 비활성. 임베딩은 CPU |
+| `OPENAI_API_KEY` | 없음 | 설정 → OpenAI API 키 설정에서 저장합니다. 키가 비어 있으면 첫 질문에서도 입력을 요청합니다. |
+| `CLUE_FAKE_LLM` | `0` | 기본은 실제 GPT 스트리밍. `1`은 개발용 테스트 답변 |
 
-$env:CLUE_FRAME_CLASSIFIER = 'cpu'
-$env:CLUE_ENABLE_AUDIO = '0'
-$env:CLUE_ASR_DEVICE = 'cpu'
-$env:CLUE_FAKE_LLM = '1'
-$env:CLUE_USE_KO_RERANKER = '0'
-& $python -m desktop_app.main
-```
+명시적 GPU 프레임 모드는 워밍업에 실패하면 원인과 함께 시작을 중단합니다. 자동 음성 모드는
+로컬 모델이 없거나, CPU 사전 검사에서 5초 합성 입력 처리에 5초 이상 걸리거나, WASAPI
+출력 장치를 열 수 없으면 이유를 알리고 화면 기반 질의응답을 계속합니다. 실제 전사의 속도는
+발화와 시스템 부하에 따라 달라지며, 수집 중 적체가 감지되면 음성 수집 중단을 알립니다.
 
-## GPU 프레임 분류와 실 LLM
+모델은 설치 폴더의 `models/`와 `.cache/models/embeddings/`에서 읽습니다. 설치를
+다시 실행하면 준비된 모델을 재사용합니다. 로컬 프레임·전사·임베딩 추론은 준비된 모델을
+사용하며, 실제 GPT 질문에는 인터넷 연결이 필요합니다.
 
-GPU 모드는 프레임 세션을 시작할 때 모델을 로드하고 워밍업합니다. Windows에서는 설치된 torch가 Paddle·PaddleOCR보다 먼저 로드됩니다. 가중치가 없거나, CUDA 장치에 접근할 수 없거나, DLL 로드·워밍업이 실패하면 GUI에 원인과 `PROCESSING_FAILED`가 표시되고 세션 시작이 중단됩니다. CPU 실행은 `CLUE_FRAME_CLASSIFIER=cpu`를 명시할 때 적용됩니다.
-
-`CLUE_FAKE_LLM=0`으로 설정하면 Q&A 첫 질문부터 OpenAI 스트리밍 클라이언트를 사용합니다. 로컬에서 API 인증을 준비한 경우에만 켜며, 키를 소스 코드나 저장소에 기록하지 마세요. 통합 테스트에서는 실제 API를 호출하지 않았습니다.
-
-Sentence Transformers 임베딩은 CPU에서 지연 초기화됩니다. 모델은 첫 확정 전사 인덱싱 때 내려받을 수 있습니다. Ko-Reranker는 기본 비활성화이며 `CLUE_USE_KO_RERANKER=1`일 때에만 생성됩니다.
-
-## 데이터와 제한
-
-세션 DB 및 프레임 이미지는 `sessions/<session_id>/` 아래 생성됩니다. 미리보기는 동영상을 재생하는 대신 모듈이 저장한 최신 대표 프레임을 표시합니다. 실제 시스템 오디오 입력 장치, Whisper 모델 성능, 장시간 동작은 대상 Windows 장치에서 별도 확인이 필요합니다.
+프레임·전사 이벤트는 같은 세션 큐를 거쳐 `sessions/<session_id>/metadata.db`에 저장됩니다.
+대표 이미지는 해당 세션의 `frames/`에 있습니다. 시연 순서와 확인한 환경은
+[멘토링 시연 진행서](mentoring-demo.md)를 참고하세요.

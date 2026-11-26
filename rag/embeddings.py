@@ -15,22 +15,42 @@ import numpy as np
 
 # [설정] DEFAULT_EMBEDDING_MODEL: 다국어 MiniLM (변경하면 기존 저장 벡터 재생성 필요).
 DEFAULT_EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+DEFAULT_EMBEDDING_REVISION = "e8f8c211226b894fcb81acc59f3b34ba3efd5f42"
+EMBEDDING_CACHE_DIR = Path(__file__).resolve().parents[1] / ".cache" / "models" / "embeddings"
+DEFAULT_EMBEDDING_FILES = (
+    "config.json", "modules.json", "model.safetensors", "tokenizer.json",
+    "tokenizer_config.json", "sentence_bert_config.json", "1_Pooling/config.json",
+)
 WINDOWED_SUFFIX = "::windowed-mean-v1"
+
+
+def default_embedding_is_ready() -> bool:
+    from huggingface_hub import try_to_load_from_cache
+
+    for name in DEFAULT_EMBEDDING_FILES:
+        cached = try_to_load_from_cache(
+            DEFAULT_EMBEDDING_MODEL, name, revision=DEFAULT_EMBEDDING_REVISION,
+            cache_dir=EMBEDDING_CACHE_DIR,
+        )
+        if not isinstance(cached, str) or not Path(cached).is_file() or not Path(cached).stat().st_size:
+            return False
+    return True
 
 
 class SentenceTransformerEmbedder:
     # [설정] device: "cpu", cache_folder: None (프로젝트 .cache/models/embeddings), window_long_text: True (내부 구간 검색).
     # [내부] 임베딩 모델·장치·캐시 경로·긴 텍스트 처리 방식과 모델 식별자를 준비한다.
     def __init__(self, model_name=DEFAULT_EMBEDDING_MODEL,
-                 *, device="cpu", cache_folder=None, window_long_text=True):
+                 *, device="cpu", cache_folder=None, window_long_text=True,
+                 local_files_only=False, revision=None):
         self._model_id = model_name
         self._window_long_text = window_long_text
         # Representation changes must not silently mix with older saved vectors.
         self.model_name = model_name + (WINDOWED_SUFFIX if window_long_text else "")
         self._device = device
-        self._cache_folder = str(cache_folder or (
-            Path(__file__).resolve().parents[1] / ".cache" / "models" / "embeddings"
-        ))
+        self._cache_folder = str(cache_folder or EMBEDDING_CACHE_DIR)
+        self._local_files_only = local_files_only
+        self._revision = revision
         self._model = None
 
     # [내부 / 외부(sentence_transformers.SentenceTransformer)] 로컬 임베딩 모델을 준비하며 없으면 캐시에 내려받는다.
@@ -39,7 +59,8 @@ class SentenceTransformerEmbedder:
             from sentence_transformers import SentenceTransformer
             self._model = SentenceTransformer(
                 self._model_id, device=self._device, cache_folder=self._cache_folder,
-                trust_remote_code=False,
+                trust_remote_code=False, local_files_only=self._local_files_only,
+                revision=self._revision,
             )
 
     # [내부 → 반환(벡터 목록)] 텍스트를 인코딩하고 부모 청크의 대표 벡터만 반환한다.

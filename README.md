@@ -12,6 +12,8 @@ P-실무프로젝트 SW1분반 1조 · Python 3.11+ · 모듈 계약 v1.6
 
 기능을 구현하기 전에 공통 계약을 확인하고, 기존 `core/`의 시계와 세션 코드를 재사용합니다.
 
+멘토링 시연은 [시연 진행서](docs/mentoring-demo.md)에서 설치, 강의 자료 선택, 질문 순서를 확인하세요.
+
 ## 문서 및 코드
 
 | 경로 | 내용 |
@@ -27,8 +29,8 @@ P-실무프로젝트 SW1분반 1조 · Python 3.11+ · 모듈 계약 v1.6
 ## 현재 구현 상태
 
 - **통합됨:** 공통 계약·세션, PySide6 앱, 프레임 캡처/SSIM, 음성 전사, HybridRAGIndex, SQLite·Q&A의 기본 실행 연결
-- **기본 실행:** 비디오 전용 PP-DocLayout_plus-L 프레임 분류(`gpu:0`), GUI 대표 프레임 미리보기, Mock LLM
-- **별도 준비:** Windows GPU 의존성과 PP-DocLayout_plus-L 가중치, 선택형 오디오·Ko-Reranker, 실제 OpenAI 호출
+- **기본 실행:** 프레임·음성 GPU 자동 검사, CPU 호환 모드, GUI 대표 프레임 미리보기, CPU RAG
+- **실제 질의응답:** 앱 설정에서 OpenAI API 키를 한 번 저장하면 강의 화면과 전사를 사용합니다. 개발용 테스트 답변은 명시적으로 켤 수 있습니다.
 
 GPU 설치는 [Windows 의존성 설치](INSTALL-dependencies-win-py312.md), 실행 옵션과 CPU 개발 모드는 [통합 실행 안내](docs/integration-runtime.md)를 참고합니다.
 

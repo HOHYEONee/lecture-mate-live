@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from importlib.util import find_spec
+import logging
+import os
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from PySide6.QtCore import QObject, QThreadPool, Qt, Signal, Slot
@@ -30,6 +34,12 @@ from interface_spec.contracts import (
 
 from .workers import FunctionWorker
 
+if TYPE_CHECKING:
+    from audio_processing import AudioProcessor
+
+
+log = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True, slots=True)
 class _QuestionDraft:
@@ -44,6 +54,7 @@ class DesktopController(QObject):
     state_changed = Signal(object)
     busy_changed = Signal(bool)
     error_raised = Signal(str)
+    runtime_notice = Signal(str)
     operation_completed = Signal(str)
     answer_event_received = Signal(object)
     _module_answer_received = Signal(object)
@@ -66,6 +77,9 @@ class DesktopController(QObject):
         self._state = SessionState.IDLE
         self._region: CaptureRegion | None = None
         self._audio_device_id: str | None = None
+        self._automatic_audio_options: Callable[[], Iterator[tuple[AudioProcessor, str]]] | None = None
+        self.startup_notices: tuple[str, ...] = ()
+        self.uses_real_qa = False
         self._pending_operation: str | None = None
         self._workers: dict[str, FunctionWorker] = {}
         self._started_modules: list[str] = []
@@ -87,6 +101,10 @@ class DesktopController(QObject):
     @property
     def session(self) -> SessionResources | None:
         return self._session
+
+    @property
+    def needs_openai_api_key(self) -> bool:
+        return self.uses_real_qa and not os.environ.get("OPENAI_API_KEY", "").strip()
 
     def _set_state(self, state: SessionState) -> None:
         if state != self._state:
@@ -130,7 +148,8 @@ class DesktopController(QObject):
             callback = self._module_error_callback()
             try:
                 self.frame_processor.set_region(region)
-                self.audio_processor.set_device(audio_device_id)
+                if self._automatic_audio_options is None:
+                    self.audio_processor.set_device(audio_device_id)
                 # Start the event consumer before producers to avoid queue buildup.
                 self._started_modules.append("context")
                 self.context_qa.start(
@@ -149,15 +168,43 @@ class DesktopController(QObject):
                     callback,
                 )
                 self._started_modules.append("audio")
-                self.audio_processor.start(
-                    session.session_id, session.clock, session.output_queue, callback
-                )
+                self._start_audio(session, audio_device_id, callback)
             except Exception:
                 self._rollback_start(session)
                 raise
 
         self._schedule("start", start_modules)
         return session.session_id
+
+    def _start_audio(self, session: SessionResources, device_id: str, callback: ErrorCallback) -> None:
+        args = (session.session_id, session.clock, session.output_queue, callback)
+        if self._automatic_audio_options is None:
+            self.audio_processor.start(*args)
+            return
+
+        from .disabled import DisabledAudioProcessor
+
+        for processor, description in self._automatic_audio_options():
+            self.audio_processor = processor
+            processor.set_device(device_id)
+            try:
+                processor.start(*args)
+            except Exception as exc:
+                processor.stop()
+                if any(error.code == "AUDIO_CLOSE_FAILED" for error in processor.errors):
+                    raise
+                log.warning("%s 시작 실패: %s", description, exc)
+                self.runtime_notice.emit(f"{description} 시작 실패 · {exc}")
+                if processor.start_failure_stage == "capture":
+                    break
+            else:
+                self.runtime_notice.emit(description)
+                return
+
+        self.audio_processor = DisabledAudioProcessor()
+        self.audio_processor.set_device(device_id)
+        self.audio_processor.start(*args)
+        self.runtime_notice.emit("음성 입력을 사용할 수 없어 화면 기반 질의응답으로 진행합니다.")
 
     def _rollback_start(self, session: SessionResources) -> None:
         errors: list[str] = []
@@ -342,6 +389,8 @@ class DesktopController(QObject):
     @Slot(object)
     def _on_module_error(self, error: ModuleError) -> None:
         self.error_raised.emit(f"{error.module.value} [{error.code}]: {error.message}")
+        if error.code == "ASR_BACKLOG":
+            self.runtime_notice.emit("전사 속도가 수집을 따라가지 못해 음성 수집이 중단됐습니다. 화면 기반 질의응답은 계속 가능합니다.")
 
     @Slot(object)
     def _on_answer_event(self, event: AnswerEvent) -> None:
@@ -361,36 +410,41 @@ def default_controller(parent: QObject | None = None) -> DesktopController:
 
 def production_controller(parent: QObject | None = None) -> DesktopController:
     """Compose the implemented modules while keeping heavy models lazy."""
-    import os
-
     from context_qa import create_context_qa
     from frame_processing import FrameProcessor
     from frame_processing.capture import WindowsWindowCapture
     from .disabled import DisabledAudioProcessor
+    from .runtime import AutoFrameClassifier, CPU_WHISPER, GPU_WHISPER, automatic_audio_options
 
-    classifier_mode = os.environ.get("CLUE_FRAME_CLASSIFIER", "gpu").strip().lower()
+    classifier_mode = os.environ.get("CLUE_FRAME_CLASSIFIER", "auto").strip().lower()
     capture_backend = WindowsWindowCapture()
     if classifier_mode == "cpu":
-        # Explicit CPU mode for development and testing.
         from frame_processing.experiments.heuristic import LayoutHeuristicClassifier
 
-        frame = FrameProcessor(classifier_factory=LayoutHeuristicClassifier, backend=capture_backend)
-    elif classifier_mode == "gpu":
-        frame = FrameProcessor(backend=capture_backend)
+        classifier_factory = LayoutHeuristicClassifier
+    elif classifier_mode in {"auto", "gpu"}:
+        def classifier_factory():
+            return AutoFrameClassifier(controller.runtime_notice.emit, require_gpu=classifier_mode == "gpu")
     else:
-        raise ValueError("CLUE_FRAME_CLASSIFIER must be 'cpu' or 'gpu'")
+        raise ValueError("CLUE_FRAME_CLASSIFIER must be 'auto', 'cpu', or 'gpu'")
+    frame = FrameProcessor(classifier_factory=classifier_factory, backend=capture_backend)
 
-    audio_enabled = os.environ.get("CLUE_ENABLE_AUDIO", "0").strip().lower() in {"1", "true", "yes"}
-    if audio_enabled:
+    audio_enabled = os.environ.get("CLUE_ENABLE_AUDIO", "1").strip().lower() in {"1", "true", "yes"}
+    audio_device = os.environ.get("CLUE_ASR_DEVICE", "auto").strip().lower()
+    audio_model = os.environ.get("CLUE_ASR_MODEL") or (CPU_WHISPER if audio_device == "cpu" else GPU_WHISPER)
+    if audio_enabled and audio_device not in {"cpu", "cuda", "auto"}:
+        raise ValueError("CLUE_ASR_DEVICE must be 'cpu', 'cuda', or 'auto'")
+    if audio_enabled and audio_device != "auto":
         from audio_processing import AudioProcessor
         from audio_processing.backends import FasterWhisperTranscriber
+        from .runtime import local_whisper_model
 
-        audio_device = os.environ.get("CLUE_ASR_DEVICE", "cpu").strip().lower()
-        if audio_device not in {"cpu", "cuda", "auto"}:
-            raise ValueError("CLUE_ASR_DEVICE must be 'cpu', 'cuda', or 'auto'")
+        try:
+            model = str(local_whisper_model(audio_model))
+        except FileNotFoundError:
+            model = audio_model
         transcriber = FasterWhisperTranscriber(
-            model=os.environ.get("CLUE_ASR_MODEL", "large-v3-turbo"),
-            device=audio_device,
+            model=model, device=audio_device, project_cuda_only=True,
         )
         audio = AudioProcessor(transcriber=transcriber)
     else:
@@ -401,9 +455,26 @@ def production_controller(parent: QObject | None = None) -> DesktopController:
         from rag.reranker import KoReranker
 
         reranker = KoReranker(device=os.environ.get("CLUE_RERANKER_DEVICE", "cpu"))
-    fake_llm = os.environ.get("CLUE_FAKE_LLM", "1").strip().lower() not in {"0", "false", "no"}
-    context = create_context_qa(fake_llm=fake_llm, rag="hybrid", reranker=reranker)
+    key_configured = bool(os.environ.get("OPENAI_API_KEY", "").strip())
+    fake_llm = os.environ.get("CLUE_FAKE_LLM", "0").strip().lower() in {"1", "true", "yes"}
+    embedder = None
+    if find_spec("sentence_transformers") is not None:
+        from rag.embeddings import DEFAULT_EMBEDDING_REVISION, SentenceTransformerEmbedder
+
+        embedder = SentenceTransformerEmbedder(local_files_only=True, revision=DEFAULT_EMBEDDING_REVISION)
+    context = create_context_qa(fake_llm=fake_llm, rag="hybrid", reranker=reranker, embedder=embedder)
     controller = DesktopController(frame, audio, context, parent=parent)
+    controller.uses_real_qa = not fake_llm
+    if audio_enabled and audio_device == "auto":
+        controller._automatic_audio_options = lambda: automatic_audio_options(
+            audio_model, controller.runtime_notice.emit,
+        )
+    if fake_llm:
+        controller.startup_notices = ("개발용 테스트 답변 모드입니다.",)
+    elif not key_configured:
+        controller.startup_notices = ("실제 질의응답을 사용하려면 설정에서 OpenAI API 키를 입력하세요.",)
+    if not audio_enabled:
+        controller.startup_notices += ("음성 수집이 꺼져 있습니다. 화면 기반 질의응답을 사용할 수 있습니다.",)
     controller.window_capture_backend = capture_backend
     controller.audio_enabled = audio_enabled
     return controller

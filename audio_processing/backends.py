@@ -38,7 +38,7 @@ class FasterWhisperTranscriber:
     # [외부 호출] 사용할 모델·장치·언어·다운로드 경로·오프라인 실행 설정을 저장한다.
     def __init__(self, model=DEFAULT_MODEL, *, device="auto", compute_type=None,
                  language="ko", download_root=None, hotwords="", on_status=None,
-                 local_files_only=False):
+                 local_files_only=False, device_index=0, project_cuda_only=False):
         self.model_name = model
         self.device = device
         self.compute_type = compute_type
@@ -47,6 +47,8 @@ class FasterWhisperTranscriber:
         self.hotwords = hotwords.strip()
         self.on_status = on_status
         self.local_files_only = local_files_only
+        self.device_index = device_index
+        self.project_cuda_only = project_cuda_only
         self.actual_device = None
         self.actual_compute_type = None
         self.fallback_reason = None
@@ -88,6 +90,7 @@ class FasterWhisperTranscriber:
         if self.device == "auto" and device == "cpu" and precision in ("float16", "int8_float16"):
             precision = "int8"
         self._model = WhisperModel(model, device=device, compute_type=precision,
+                                  device_index=self.device_index if device == "cuda" else 0,
                                   download_root=self.download_root,
                                   local_files_only=self.local_files_only)
         self.actual_device, self.actual_compute_type = device, precision
@@ -96,8 +99,9 @@ class FasterWhisperTranscriber:
     def prepare(self):
         if self._model is None:
             # [다른 파일] backends.FasterWhisperTranscriber.prepare → runtime.prepare_cuda_libraries: 현재 프로세스의 GPU 라이브러리 경로 준비.
-            prepare_cuda_libraries()
             device = self.device
+            if device != "cpu":
+                prepare_cuda_libraries(include_system=not self.project_cuda_only)
             if device == "auto":
                 import ctranslate2
                 device = "cuda" if ctranslate2.get_cuda_device_count() else "cpu"

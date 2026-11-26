@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QInputDialog,
     QMessageBox,
     QPushButton,
     QSplitter,
@@ -38,6 +39,7 @@ from interface_spec.contracts import (
 
 from .controller import DesktopController
 from .region_selector import RegionSelector
+from .settings import save_openai_api_key
 
 
 class ConversationView(QTextBrowser):
@@ -366,6 +368,7 @@ class MainWindow(QMainWindow):
         controller.busy_changed.connect(self._set_busy)
         controller.operation_completed.connect(self._on_operation_completed)
         controller.error_raised.connect(self._show_error)
+        controller.runtime_notice.connect(self._show_runtime_notice)
         controller.answer_event_received.connect(self._handle_answer_event)
 
         self._display_timer = QTimer(self)
@@ -385,6 +388,8 @@ class MainWindow(QMainWindow):
         self._stream_render_timer.timeout.connect(self._render_streaming_answer)
         self._set_state(controller.state)
         self._update_buttons()
+        for message in controller.startup_notices:
+            self._show_runtime_notice(message)
 
     @Slot()
     def _choose_region(self) -> None:
@@ -490,6 +495,8 @@ class MainWindow(QMainWindow):
     def _submit_question(self) -> None:
         text = self.question_input.text().strip()
         if not text or self._awaiting_question_id is not None:
+            return
+        if self.controller.needs_openai_api_key and not self._edit_openai_api_key():
             return
         try:
             if self._draft_id is None:
@@ -833,11 +840,34 @@ class MainWindow(QMainWindow):
     def _show_settings(self) -> None:
         audio = "켜짐" if bool(getattr(self.controller, "audio_enabled", False)) else "꺼짐"
         capture = "프로그램 창" if self._capture_window else "화면 영역"
-        QMessageBox.information(
-            self,
-            "CLUE 설정",
-            f"캡처 방식: {capture}\n오디오 입력: {audio}",
+        if self.controller.uses_real_qa:
+            qa = "API 키 필요" if self.controller.needs_openai_api_key else "실제 GPT 사용"
+        else:
+            qa = "테스트 답변"
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("CLUE 설정")
+        dialog.setText(f"캡처 방식: {capture}\n오디오 입력: {audio}\n질의응답: {qa}")
+        key_button = dialog.addButton("OpenAI API 키 설정", QMessageBox.ButtonRole.ActionRole)
+        key_button.setEnabled(self._awaiting_question_id is None)
+        dialog.addButton(QMessageBox.StandardButton.Close)
+        dialog.exec()
+        if dialog.clickedButton() is key_button:
+            self._edit_openai_api_key()
+
+    def _edit_openai_api_key(self) -> bool:
+        key, accepted = QInputDialog.getText(
+            self, "OpenAI API 키", "이 PC에서 사용할 API 키를 입력하세요.",
+            QLineEdit.EchoMode.Password,
         )
+        if not accepted:
+            return False
+        try:
+            save_openai_api_key(key)
+        except (OSError, ValueError) as exc:
+            self._show_error(str(exc))
+            return False
+        self._show_runtime_notice("OpenAI API 키를 이 PC에 저장했습니다.")
+        return True
 
     def _set_question_busy(self, busy: bool) -> None:
         self.question_input.setEnabled(not busy)
@@ -987,6 +1017,11 @@ class MainWindow(QMainWindow):
         hours, remainder = divmod(seconds, 3600)
         minutes, seconds = divmod(remainder, 60)
         self.elapsed_label.setText(f"{hours:02d}:{minutes:02d}:{seconds:02d}")
+
+    @Slot(str)
+    def _show_runtime_notice(self, message: str) -> None:
+        self.statusBar().showMessage(message)
+        self._show_error(message)
 
     @Slot(str)
     def _show_error(self, message: str) -> None:

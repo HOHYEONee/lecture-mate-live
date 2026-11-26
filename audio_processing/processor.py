@@ -49,6 +49,7 @@ class AudioProcessor:
         self.failed_chunks = deque()
         self.undelivered_events = deque()
         self.errors = []
+        self.start_failure_stage = None
 
 
     # [외부 호출] 앱에서 받은 출력 장치 ID를 저장하며 실행 중에는 변경을 막는다.
@@ -68,23 +69,27 @@ class AudioProcessor:
             self._session_id, self._clock = session_id, clock
             self._output, self._on_error = output_queue, on_error
             self.errors = []
+            self.start_failure_stage = None
             self._jobs = Queue()
             # [다른 파일] processor.AudioProcessor.start → chunks.Chunker(): Chunker 객체·설정 준비.
             self._chunker = Chunker(self._period, self._overlap)
             # [다른 파일] processor.AudioProcessor.start → chunks.TranscriptAssembler(): TranscriptAssembler 객체·설정 준비.
             self._assembler = TranscriptAssembler(session_id, holdback_ms=self._boundary_holdback_ms)
             self._context_text = ""
+            stage = "model"
             try:
                 if hasattr(self._transcriber, "reset_context"):
                     # [다른 파일 / 기본 구현] processor.AudioProcessor.start → backends.FasterWhisperTranscriber.reset_context: 이전 전사 문맥 초기화.
                     self._transcriber.reset_context()
                 # [다른 파일 / 기본 구현] processor.AudioProcessor.start → backends.FasterWhisperTranscriber.prepare: 음성 인식 모델 준비.
                 self._transcriber.prepare()
+                stage = "capture"
                 # [다른 파일 / 기본 구현] processor.AudioProcessor.start → backends.WasapiLoopbackSource.prepare: 루프백 장치·스트림 준비.
                 self._source.prepare(self._device_id)
                 # [다른 파일 / 기본 구현] processor.AudioProcessor.start → backends.WasapiLoopbackSource.start: 공통 시계로 장치 수집 시작.
                 self._source.start(clock)
             except Exception as exc:
+                self.start_failure_stage = stage
                 # [같은 파일] AudioProcessor.start → AudioProcessor._report: 오류 기록 및 앱에 통보.
                 self._report("AUDIO_START_FAILED", exc)
                 try:

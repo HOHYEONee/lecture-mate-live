@@ -1,7 +1,7 @@
-# Windows x64 · Python 3.12 GPU 통합 환경
+# Windows x64 · Python 3.12 통합 환경
 
 아래 구성은 PaddlePaddle GPU 3.3.1 CUDA 12.9와 PyTorch 2.14.1의 CPU 휠을 사용합니다.
-프레임 분류는 PP-DocLayout_plus-L의 `gpu:0`에서 실행되고, PyTorch는 기존 CPU 임베딩과
+GPU 검사를 통과하면 프레임 분류는 선택된 장치에서 PP-DocLayout_plus-L을 실행합니다. PyTorch는 CPU 임베딩과
 CPU 재정렬 경로에서 사용할 수 있습니다. 이 설치 구성에서는 CUDA Ko-Reranker를 사용할 수
 없습니다. GPU PyTorch가 필요한 경우 통합 담당자와 호환 조합을 검증하세요.
 
@@ -13,6 +13,39 @@ RTX 4060 Ti는 Ada(8.9), RTX 5060은 Blackwell(12.0)입니다. CUDA 12.8부터 B
 [NVIDIA CUDA 12.9 릴리스 노트](https://docs.nvidia.com/cuda/archive/12.9.0/cuda-toolkit-release-notes/index.html)
 
 ## 설치
+
+PowerShell에서 아래 두 명령을 실행합니다. 설치는 사용자별 가상환경 `.venv312`와
+프로젝트의 `models/`, `.cache/`를 사용하고, NVIDIA 드라이버나 시스템 PATH를
+수정하지 않습니다. `nvidia-smi`에서 NVIDIA 장치가 확인되면 GPU 휠과 GPU 모델을
+함께 준비합니다. AMD·Intel·GPU 없는 PC는 CPU 프로필로 설치합니다.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-demo.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-demo.ps1 -Diagnose
+```
+
+`-CpuOnly`는 GPU 의존성 설치를 생략합니다. `-SkipModels`는 이미 모델을 갖고 있거나
+네트워크 연결 없이 GUI만 점검할 때 사용합니다. Python Launcher 대신 Python 실행 파일을
+직접 사용하려면 `-PythonExecutable <경로>`를 지정합니다.
+
+GPU 설치는 공식 Paddle CUDA 12.9 휠을 `.cache/wheels/`에 내려받아 재사용합니다.
+휠을 미리 받은 환경에서는 `-PaddleWheel <공식 cu129 휠 경로>`를 지정할 수 있습니다.
+GPU 패키지 설치에 실패하면 경고와 함께 CPU 프로필 준비를 진행합니다.
+
+모델 준비가 중단됐다면 아래 명령을 다시 실행합니다. 모델의 기본 경로는 설치 폴더를
+기준으로 결정되며, 준비된 파일은 그대로 사용합니다. CPU 전용 설치는 `--gpu`를 생략합니다.
+
+```powershell
+& .\.venv312\Scripts\python.exe -m scripts.prepare_demo_models --gpu
+```
+
+설치 명령으로 모델을 각 PC에서 내려받습니다. 소스 배포에는 가중치가 포함되지 않습니다.
+[PP-DocLayout_plus-L](https://huggingface.co/PaddlePaddle/PP-DocLayout_plus-L) ·
+[Whisper base](https://huggingface.co/Systran/faster-whisper-base) ·
+[Whisper large-v3-turbo](https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo) ·
+[MiniLM](https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2)
+
+### 수동 GPU 설치
 
 프로젝트 루트에서 새 가상환경을 만듭니다. 아래 Paddle 링크는 공식 인덱스의
 Windows x64/Python 3.12 휠을 직접 지정합니다. 두 프레임워크를 먼저 설치하고,
@@ -50,7 +83,7 @@ cuBLAS·cuDNN 버전과 충돌하므로 통합 설치에서 제외합니다.
 1. `python -m desktop_app.main`이 프로젝트 `.env`를 읽고 PySide6 앱과 `production_controller()`를 만듭니다. 이때 모델은 지연 로딩 상태입니다.
 2. 수집을 시작하면 제어 작업 스레드가 맥락 모듈, 프레임 모듈, 오디오 모듈 순서로 시작합니다.
 3. 이전 프레임 초기화는 `FrameProcessor.start()` → `PlusLClassifier` → Paddle → PaddleOCR·PaddleX → ModelScope의 torch 가져오기 순서에 노출됐습니다. 임베딩과 재정렬도 각자의 첫 실행 때 torch를 불러올 수 있습니다.
-4. Windows GPU 분류기는 가중치 파일을 확인한 뒤 설치된 torch를 먼저 불러옵니다. 이어서 Paddle이 `gpu:0`을 확인하고 PaddleOCR 모델을 초기화합니다. 워밍업이 끝나면 정기 캡처가 시작됩니다. DLL 로드 실패는 `PROCESSING_FAILED`와 원인 메시지로 GUI에 전달됩니다.
+4. Windows GPU 분류기는 가중치 파일을 확인한 뒤 설치된 torch를 먼저 불러옵니다. 이어서 선택한 CUDA 장치에서 PaddleOCR 모델을 초기화합니다. 워밍업이 끝나면 정기 캡처가 시작됩니다. 자동 모드에서는 GPU 검사 실패 원인과 CPU 전환이 GUI에 표시됩니다. GPU 강제 모드에서는 `PROCESSING_FAILED`와 함께 세션 시작을 중단합니다.
 
 `WinError 127`은 DLL이 의존하는 함수의 진입점을 찾지 못했다는 뜻입니다. Windows는
 DLL 이름만으로 탐색할 때 프로세스에 로드된 모듈도 검사하므로, CUDA 12와 13 휠이
@@ -77,8 +110,10 @@ cuDNN 부품의 버전이 다르면 충돌이 재현됐습니다.
 ## RTX 4060 Ti 및 RTX 5060 검증
 
 각 머신에서 [프레임 가중치](frame_processing/README.md#가중치와-실행)를 준비합니다.
-기본 선택을 확인하려면 현재 PowerShell과 프로젝트 `.env`에서 `CLUE_FRAME_CLASSIFIER`
-설정을 제거합니다. 수동 `sitecustomize.py` 수정이나 시스템 CUDA DLL 복사 없이 새 환경에서 실행합니다.
+기본 자동 선택을 확인하려면 현재 PowerShell과 프로젝트 `.env`에서
+`CLUE_FRAME_CLASSIFIER`와 `CLUE_ASR_DEVICE` 설정을 비웁니다. `run-demo.ps1 -Diagnose`가
+하드웨어, 가용 VRAM, 드라이버, 모델 파일 및 각 워밍업 결과를 출력합니다. 아래 동일 프로세스
+검사도 실행할 수 있습니다.
 
 ```powershell
 nvidia-smi
@@ -118,9 +153,9 @@ print(paddle.device.cuda.get_device_name(), "Paddle CUDA", paddle.version.cuda()
 `CLUE_FRAME_MODEL_DIR`을 일시 지정해 재현할 수 있습니다. GUI가 파일 경로와
 `PROCESSING_FAILED`를 표시하는지 확인한 뒤 설정을 원복합니다.
 
-RTX 4060 Ti 검증에서 합성 스모크는 정기 관측 8개를 모두 1,000ms 간격으로 수집하고
+RTX 4060 Ti 새 데모 환경에서 8초 합성 스모크는 정기 관측 9개를 모두 1,000ms 간격으로 수집하고
 질문 스냅샷 2개를 저장했습니다. 통합 GUI 컨트롤러에는 합성 캡처를 연결해 세션 시작,
-일시정지, 재개, 정지와 SQLite 기록을 확인했습니다. 설치 검사와 자동 테스트 138개가
+일시정지, 재개, 정지와 SQLite 기록을 확인했습니다. 설치 검사와 자동 테스트 263개가
 통과했습니다.
 
 오디오 통합 검증은 `CLUE_ENABLE_AUDIO=1`, `CLUE_ASR_DEVICE=cuda`와 로컬 테스트용

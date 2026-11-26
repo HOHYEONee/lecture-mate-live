@@ -70,6 +70,13 @@ def env_int(name: str, default: int | None) -> int | None:
     return value if value > 0 else default
 
 
+def _openai_api_key() -> str:
+    key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not key:
+        raise LLMError("llm_api_key_required", "CLUE 설정에서 OpenAI API 키를 입력하세요.")
+    return key
+
+
 class LLMStream(Protocol):
     usage: Usage | None
 
@@ -161,8 +168,9 @@ class OpenAIClient:
                 from openai import OpenAI
             except ImportError as exc:
                 raise LLMError("llm_unavailable", "openai package is not installed") from exc
+            _openai_api_key()
             try:
-                client = OpenAI(timeout=self.timeout_s, max_retries=0)
+                client = OpenAI(api_key=_openai_api_key, timeout=self.timeout_s, max_retries=0)
             except Exception as exc:
                 raise LLMError("llm_unavailable", str(exc)) from exc
         self._client = client
@@ -192,6 +200,10 @@ class OpenAIClient:
         try:
             events = self._client.responses.create(**kwargs)
         except Exception as exc:
+            if getattr(exc, "status_code", None) in (401, 403):
+                raise LLMError("llm_auth_failed", "OpenAI 인증에 실패했습니다. CLUE 설정에서 API 키와 권한을 확인하세요.") from exc
+            if type(exc).__name__ in {"APIConnectionError", "APITimeoutError"}:
+                raise LLMError("llm_request_failed", "OpenAI에 연결하지 못했습니다. 인터넷 연결을 확인하세요.", True) from exc
             raise LLMError("llm_request_failed", f"{type(exc).__name__}: {exc}", is_transient(exc)) from exc
         stream = _GeneratorStream()
         return stream._bind(self._read(events, stream))

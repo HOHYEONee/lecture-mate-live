@@ -19,6 +19,7 @@ from core import SessionManager
 from desktop_app.controller import DesktopController, production_controller
 from desktop_app.disabled import DisabledAudioProcessor
 from desktop_app.main_window import MainWindow
+from desktop_app.runtime import AutoFrameClassifier
 from frame_processing import FrameProcessor
 from frame_processing.capture import WindowsWindowCapture
 from frame_processing.classification import PlusLClassifier
@@ -36,16 +37,25 @@ from rag import HybridRAGIndex
 
 
 class ModuleIntegrationTests(unittest.TestCase):
-    def test_production_controller_defaults_to_gpu_without_loading_model(self) -> None:
+    def test_production_controller_defaults_to_auto_without_loading_models(self) -> None:
         with patch.dict(os.environ, clear=True), patch.object(PlusLClassifier, "__init__") as init:
             controller = production_controller()
         self.addCleanup(controller.deleteLater)
 
-        self.assertIs(controller.frame_processor._classifier_factory, PlusLClassifier)
+        self.assertIsInstance(controller.frame_processor._classifier_factory(), AutoFrameClassifier)
         self.assertIsInstance(controller.window_capture_backend, WindowsWindowCapture)
         self.assertIs(controller.frame_processor._backend, controller.window_capture_backend)
         self.assertIsInstance(controller.audio_processor, DisabledAudioProcessor)
+        self.assertTrue(controller.audio_enabled)
+        self.assertIsNotNone(controller._automatic_audio_options)
         init.assert_not_called()
+
+    def test_production_controller_with_key_selects_real_qa_lazily(self) -> None:
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "unit-test-value"}, clear=True):
+            controller = production_controller()
+        self.addCleanup(controller.deleteLater)
+        self.assertIsNone(controller.context_qa._llm)
+        self.assertEqual(controller.startup_notices, ())
 
     def test_production_controller_composes_contract_modules_without_loading_models(self) -> None:
         values = {
