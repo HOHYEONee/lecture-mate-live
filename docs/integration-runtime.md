@@ -26,6 +26,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-demo.ps1 -Diag
 | `CLUE_USE_KO_RERANKER` | `0` | 멘토링 기본 구성에서 비활성. 임베딩은 CPU |
 | `OPENAI_API_KEY` | 없음 | 설정 → OpenAI API 키 설정에서 저장합니다. 키가 비어 있으면 첫 질문에서도 입력을 요청합니다. |
 | `CLUE_FAKE_LLM` | `0` | 기본은 실제 GPT 스트리밍. `1`은 개발용 테스트 답변 |
+| `CLUE_MODEL` | `gpt-6.1-sol` | 맥락 모듈의 기본 모델. 사용할 모델을 재정의할 수 있습니다. |
+| `CLUE_REASONING_EFFORT` | 모델 기본값 | 추론 강도를 지정합니다. 맥락 모듈의 시연 권장값은 `medium`입니다. |
 
 명시적 GPU 프레임 모드는 워밍업에 실패하면 원인과 함께 시작을 중단합니다. 자동 음성 모드는
 로컬 모델이 없거나, CPU 사전 검사에서 5초 합성 입력 처리에 5초 이상 걸리거나, WASAPI

@@ -155,14 +155,13 @@ print(paddle.device.cuda.get_device_name(), "Paddle CUDA", paddle.version.cuda()
 
 RTX 4060 Ti 새 데모 환경에서 8초 합성 스모크는 정기 관측 9개를 모두 1,000ms 간격으로 수집하고
 질문 스냅샷 2개를 저장했습니다. 통합 GUI 컨트롤러에는 합성 캡처를 연결해 세션 시작,
-일시정지, 재개, 정지와 SQLite 기록을 확인했습니다. 설치 검사와 자동 테스트 263개가
+일시정지, 재개, 정지와 SQLite 기록을 확인했습니다. 설치 검사와 자동 테스트 272개가
 통과했습니다.
 
-오디오 통합 검증은 `CLUE_ENABLE_AUDIO=1`, `CLUE_ASR_DEVICE=cuda`와 로컬 테스트용
-오디오로 별도로 실행합니다. 기존 음성 모듈이 실제로 전사할 때 CUDA 12·cuDNN 9
-DLL과 WASAPI 입력이 동작하는지 확인합니다. 같은 세션의 전사 인덱싱·검색과 옵션형
-Ko-Reranker 동작도 확인합니다. 장시간 실행에서는 약 36분 이상 VRAM, 수집 주기,
-DLL 오류를 기록합니다. CUDA Ko-Reranker용 새 후보를 검증할 때는 별도 가상환경에서 위
+오디오 통합 검증은 기본 `auto`로 시작하고 GUI에서 음성 GPU가 선택되는지 확인합니다.
+로컬 강의 창을 15분 이상 재생하며 전사 적체, 캡처 주기, RAM·VRAM, 종료 후 SQLite를
+확인합니다. GPU 전사만 따로 점검하려면 `CLUE_ASR_DEVICE=cuda`로 설정합니다.
+CUDA Ko-Reranker용 새 후보를 검증할 때는 별도 가상환경에서 위
 프로브의 torch 버전 확인을 해당 버전으로 바꾸고 `torch.cuda.is_available()` 확인과
 두 torch 텐서의 `device="cuda:0"`을 추가합니다.
 `pip check`는 설치 메타데이터를 검사합니다. DLL 문제를 조사할 때는 수집 중

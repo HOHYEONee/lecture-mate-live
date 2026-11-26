@@ -48,7 +48,9 @@ try {
                 if (-not (Test-Path -LiteralPath $cluePaddle -PathType Leaf)) {
                     $clueUrl = "https://paddle-whl.cdn.bcebos.com/stable/cu129/paddlepaddle-gpu/$clueWheelName"
                     Write-Host 'Paddle CUDA 12.9 휠을 다운로드합니다 (약 810 MB).'
-                    & curl.exe --silent --show-error --fail --location --connect-timeout 15 --max-time 120 --retry 2 --output "$cluePaddle.part" $clueUrl
+                    & curl.exe --silent --show-error --fail --location --connect-timeout 15 `
+                        --max-time 1800 --speed-time 45 --speed-limit 4096 --retry 2 `
+                        --output "$cluePaddle.part" $clueUrl
                     if ($LASTEXITCODE -ne 0) { throw 'Paddle CUDA 휠 다운로드가 완료되지 않았습니다.' }
                     Move-Item -LiteralPath "$cluePaddle.part" -Destination $cluePaddle
                 }
