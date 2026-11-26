@@ -45,24 +45,23 @@ Visual을 Text로 분류한 건은 0장이었고, RTX 4060 Ti 추론 P95는 약 
 
 ## Windows 설치
 
-검증 환경은 Windows x64, Python 3.12, NVIDIA RTX 4060 Ti, CUDA 12.6용 PaddlePaddle GPU
-3.3.1, PaddleOCR 3.3.1, PaddleX 3.3.13입니다. 저장소 루트에서 실행합니다.
+통합 앱은 [Windows GPU 의존성 설치](../INSTALL-dependencies-win-py312.md)를 따르세요.
+프레임 모듈만 실행할 때는 저장소 루트에서 아래와 같이 CUDA 12.9용 PaddlePaddle GPU
+3.3.1, PaddleOCR 3.3.1, PaddleX 3.3.13을 설치합니다.
 
 ```powershell
 py -3.12 -m venv .venv
 $python = '.\.venv\Scripts\python.exe'
-& $python -m pip install paddlepaddle-gpu==3.3.1 --index-url https://www.paddlepaddle.org.cn/packages/stable/cu126/
+& $python -m pip install paddlepaddle-gpu==3.3.1 --index-url https://www.paddlepaddle.org.cn/packages/stable/cu129/
 & $python -m pip install -r frame_processing/requirements.txt
 & $python -m pip check
 nvidia-smi
 ```
 
-CUDA와 cuDNN DLL 경로는 설치된 Paddle GPU 빌드 기준으로 확인하세요. 검증 환경에서는
-Paddle 빌드 cuDNN 9.9와 머신의 런타임 9.5 간 버전 차이 경고가 있었습니다.
-faster-whisper의 최신 CTranslate2도 CUDA 12·cuDNN 9 계열을 요구합니다. 두 패키지의
-동시 로드, DLL 선택 및 GPU 메모리 경쟁은 통합 환경에서 별도 검증해야 합니다.
-[PaddlePaddle Windows 설치](https://www.paddlepaddle.org.cn/documentation/docs/en/install/pip/windows-pip_en.html) ·
-[faster-whisper GPU 요구사항](https://github.com/SYSTRAN/faster-whisper#gpu)
+Windows GPU 초기화 시 torch가 설치되어 있으면 Paddle보다 먼저 불러옵니다.
+프레임 전용 환경에서는 torch 설치를 생략할 수 있습니다. cuDNN은 Paddle GPU 휠이
+지정한 버전을 사용하고, 통합 프로세스의 실제 DLL 선택은 설치 안내의 검증 절차를 따르세요.
+[PaddlePaddle Windows 설치](https://www.paddlepaddle.org.cn/documentation/docs/en/install/pip/windows-pip_en.html)
 
 ### 가중치와 실행
 

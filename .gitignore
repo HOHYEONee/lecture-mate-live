@@ -222,3 +222,4 @@ __marimo__/
 
 # Local captured lecture data and transcripts
 sessions/
+/models/

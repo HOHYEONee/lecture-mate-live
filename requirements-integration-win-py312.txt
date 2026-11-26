@@ -1,10 +1,8 @@
 # Windows x64 / Python 3.12 runtime set.
-# Install the cu126 PyTorch and Paddle GPU wheels using the documented commands
-# before installing this file; the default PyPI index is not the intended source
-# for those two framework wheels.
+# Preinstall the framework wheels using INSTALL-dependencies-win-py312.md.
 -c constraints-win-py312.txt
 -r requirements-common-win-py312.txt
 -r requirements-desktop-win-py312.txt
 -r requirements-frame-win-py312.txt
 -r requirements-audio-rag-win-py312.txt
--r requirements-torch-win-cu126-py312.txt
+-r requirements-torch-win-py312.txt

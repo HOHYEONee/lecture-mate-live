@@ -1,6 +1,6 @@
 -c constraints-win-py312.txt
 
-# Install this wheel from the PyTorch cu126 index before the aggregate file.
+# Preinstall the Windows torch wheel as described in the installation guide.
 torch==2.14.1
 sentence-transformers==6.2.0
 transformers==5.0.0

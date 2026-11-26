@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import os
+import sys
+from importlib import import_module
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Protocol
 
@@ -35,13 +38,22 @@ class PaddleLayoutDetector:
         if missing:
             raise FileNotFoundError(f"Missing {name} model files in {path}: {', '.join(missing)}")
 
+        self._gpu = device == "gpu"
+        if self._gpu and sys.platform == "win32" and find_spec("torch") is not None:
+            # Load torch's DLLs before Paddle or PaddleX's optional dependencies.
+            try:
+                import_module("torch")
+            except Exception as exc:
+                raise RuntimeError(f"PyTorch could not load before Paddle: {exc}") from exc
+
         os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
         os.environ["DISABLE_MODEL_SOURCE_CHECK"] = "True"
         import paddle
 
-        self._gpu = device == "gpu"
         if self._gpu:
-            if not (paddle.is_compiled_with_cuda() and paddle.device.cuda.device_count()):
+            if not paddle.is_compiled_with_cuda():
+                raise RuntimeError("PaddlePaddle CUDA device unavailable (CPU build installed; requires gpu:0)")
+            if not paddle.device.cuda.device_count():
                 raise RuntimeError("PaddlePaddle CUDA device unavailable (requires gpu:0)")
             paddle.device.set_device("gpu:0")
         from paddleocr import LayoutDetection

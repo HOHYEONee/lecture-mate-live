@@ -360,7 +360,7 @@ def default_controller(parent: QObject | None = None) -> DesktopController:
 
 
 def production_controller(parent: QObject | None = None) -> DesktopController:
-    """Compose the implemented modules while keeping heavy models lazy and CPU-safe."""
+    """Compose the implemented modules while keeping heavy models lazy."""
     import os
 
     from context_qa import create_context_qa
@@ -368,10 +368,10 @@ def production_controller(parent: QObject | None = None) -> DesktopController:
     from frame_processing.capture import WindowsWindowCapture
     from .disabled import DisabledAudioProcessor
 
-    classifier_mode = os.environ.get("CLUE_FRAME_CLASSIFIER", "cpu").strip().lower()
+    classifier_mode = os.environ.get("CLUE_FRAME_CLASSIFIER", "gpu").strip().lower()
     capture_backend = WindowsWindowCapture()
     if classifier_mode == "cpu":
-        # This existing component is an experimental, lower-accuracy offline fallback.
+        # Explicit CPU mode for development and testing.
         from frame_processing.experiments.heuristic import LayoutHeuristicClassifier
 
         frame = FrameProcessor(classifier_factory=LayoutHeuristicClassifier, backend=capture_backend)

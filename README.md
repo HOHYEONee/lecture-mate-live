@@ -27,10 +27,10 @@ P-실무프로젝트 SW1분반 1조 · Python 3.11+ · 모듈 계약 v1.6
 ## 현재 구현 상태
 
 - **통합됨:** 공통 계약·세션, PySide6 앱, 프레임 캡처/SSIM, 음성 전사, HybridRAGIndex, SQLite·Q&A의 기본 실행 연결
-- **1차 실행 설정:** 비디오 전용 CPU 프레임 휴리스틱, GUI 대표 프레임 미리보기, 선택형 CPU 오디오, Ko-Reranker 및 Mock LLM
-- **별도 준비 필요:** Paddle GPU PP-DocLayout 모델, 실제 OpenAI 호출, 오디오 활성화와 첫 모델 다운로드
+- **기본 실행:** 비디오 전용 PP-DocLayout_plus-L 프레임 분류(`gpu:0`), GUI 대표 프레임 미리보기, Mock LLM
+- **별도 준비:** Windows GPU 의존성과 PP-DocLayout_plus-L 가중치, 선택형 오디오·Ko-Reranker, 실제 OpenAI 호출
 
-통합 모듈 실행 및 설정은 [`docs/integration-runtime.md`](docs/integration-runtime.md)를 참고합니다.
+GPU 설치는 [Windows 의존성 설치](INSTALL-dependencies-win-py312.md), 실행 옵션과 CPU 개발 모드는 [통합 실행 안내](docs/integration-runtime.md)를 참고합니다.
 
 프로젝트 루트에서 공통 테스트를 실행할 수 있습니다.
 

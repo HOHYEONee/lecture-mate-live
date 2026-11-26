@@ -20,6 +20,8 @@ from desktop_app.controller import DesktopController, production_controller
 from desktop_app.disabled import DisabledAudioProcessor
 from desktop_app.main_window import MainWindow
 from frame_processing import FrameProcessor
+from frame_processing.capture import WindowsWindowCapture
+from frame_processing.classification import PlusLClassifier
 from frame_processing.experiments.heuristic import LayoutHeuristicClassifier
 from frame_processing.synthetic import SyntheticCapture
 from interface_spec.contracts import (
@@ -34,6 +36,17 @@ from rag import HybridRAGIndex
 
 
 class ModuleIntegrationTests(unittest.TestCase):
+    def test_production_controller_defaults_to_gpu_without_loading_model(self) -> None:
+        with patch.dict(os.environ, clear=True), patch.object(PlusLClassifier, "__init__") as init:
+            controller = production_controller()
+        self.addCleanup(controller.deleteLater)
+
+        self.assertIs(controller.frame_processor._classifier_factory, PlusLClassifier)
+        self.assertIsInstance(controller.window_capture_backend, WindowsWindowCapture)
+        self.assertIs(controller.frame_processor._backend, controller.window_capture_backend)
+        self.assertIsInstance(controller.audio_processor, DisabledAudioProcessor)
+        init.assert_not_called()
+
     def test_production_controller_composes_contract_modules_without_loading_models(self) -> None:
         values = {
             "CLUE_FRAME_CLASSIFIER": "cpu",
