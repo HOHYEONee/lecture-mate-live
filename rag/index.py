@@ -1,7 +1,7 @@
 """RAGIndexAPI: bounded text chunks, BM25/cosine RRF, and snapshot searches."""
 
 # [주요 설정 목록] 위치(함수) | 파라미터: 값 (설명)
-# HybridRAGIndex.__init__ | chunk_chars: 500 (청크 글자 수 상한), max_chunk_ms: 15000 (발화 시간 기준 확정 목표)
+# HybridRAGIndex.__init__ | chunk_chars: 500 (청크 글자 수 상한), max_chunk_ms: 15000 (발화 시간 기준 확정 목표), long_sentence_ms: 30000 (EC 재분할), chunking_mode: "sentence_duration" (15초+문장)
 # HybridRAGIndex.__init__ | rrf_k: 60 (BM25·의미 검색 순위 융합 상수), tokenizer: None (기본 Kiwi 사용)
 # HybridRAGIndex.__init__ | reranker: None (선택 기능; KoReranker 주입 시 활성화), rerank_candidates: 10 (기본 후보 수)
 # HybridRAGIndex.__init__ | maxsize: 4096 (형태소 분석 결과 캐시 항목 수)
@@ -21,6 +21,29 @@ import numpy as np
 from interface_spec.contracts import RAGChunkRecord, RAGSearchHit
 from .embeddings import SentenceTransformerEmbedder
 from .tokenization import tokenize
+from .sentence_chunking import SentenceChunking
+
+
+def _compact(text):
+    """Whitespace-independent source offsets, since chunking normalizes spaces."""
+    return "".join(text.split())
+
+
+def _saved_source_spans(chunk):
+    """Read versioned provenance carried in an opaque chunk ID (no DB schema change)."""
+    marker = "~s1~"
+    if marker not in chunk.chunk_id:
+        return None  # existing duration-mode records
+    try:
+        spans = tuple(tuple(map(int, item.split("-")))
+                      for item in chunk.chunk_id.split(marker, 1)[1].split(","))
+        if len(spans) != len(chunk.segment_ids) or any(not 0 <= a < b for a, b in spans):
+            raise ValueError
+        if sum(b-a for a, b in spans) != len(_compact(chunk.text)):
+            raise ValueError
+        return spans
+    except (ValueError, TypeError):
+        raise ValueError("invalid saved sentence source spans") from None
 
 
 # [내부] 임베딩의 유효성을 확인하고 길이가 1인 벡터로 정규화한다.
@@ -34,18 +57,25 @@ def unit_vector(values):
     return tuple(x / length for x in vector)
 
 
-class HybridRAGIndex:
-    # [설정] chunk_chars: 500 (최대 글자 수), max_chunk_ms: 15000 (누적 발화 시간 기준; 발화는 중간에서 시간으로 자르지 않음).
+class HybridRAGIndex(SentenceChunking):
+    # [설정] chunk_chars: 500 (최대 글자 수), max_chunk_ms: 15000 (목표 시간), long_sentence_ms: 30000 (연결어미 재분할 기준).
+    # [설정] chunking_mode: sentence_duration (기본), sentence (문장), duration (기존 시간/글자 방식).
     # [설정] rrf_k: 60 (순위 융합 상수), tokenizer: None (기본 Kiwi), reranker: None (기본 미사용), rerank_candidates: 10 (재정렬 후보).
     # [외부 호출] 임베딩 어댑터·청크 크기·시간 기준·RRF 설정과 메모리 검색 상태를 준비한다.
     def __init__(self, *, embedder=None, chunk_chars=500, rrf_k=60,
-                 max_chunk_ms=15_000, tokenizer=None, reranker=None, rerank_candidates=10):
-        if chunk_chars < 1 or rrf_k < 1 or max_chunk_ms < 1 or rerank_candidates < 1:
-            raise ValueError("chunk_chars, rrf_k and max_chunk_ms must be positive")
+                 max_chunk_ms=15_000, tokenizer=None, reranker=None, rerank_candidates=10,
+                 chunking_mode="sentence_duration", long_sentence_ms=30_000):
+        if min(chunk_chars, rrf_k, max_chunk_ms, rerank_candidates, long_sentence_ms) < 1:
+            raise ValueError("chunking and ranking limits must be positive")
+        if chunking_mode not in ("duration", "sentence", "sentence_duration"):
+            raise ValueError("unknown chunking mode")
         # [다른 파일] index.HybridRAGIndex.__init__ → embeddings.SentenceTransformerEmbedder(): SentenceTransformerEmbedder 객체·설정 준비.
         self._embedder = embedder if embedder is not None else SentenceTransformerEmbedder()
         self._chunk_chars, self._rrf_k = chunk_chars, rrf_k
         self._max_chunk_ms = max_chunk_ms
+        self.chunking_mode = chunking_mode
+        self.group_by_duration = chunking_mode == "sentence_duration"
+        self.long_sentence_ms = long_sentence_ms
         self._reranker = reranker
         self._rerank_candidates = rerank_candidates
         # 동일 텍스트의 형태소 분석 재사용; 테스트에서는 비교용 토크나이저 주입 가능.
@@ -59,6 +89,7 @@ class HybridRAGIndex:
         self._pending = []
         self._seen = set()
         self._restored_single = {}
+        self._restored_spans = {}
         self._sequence = 0
         self._dimension = None
         self._passages = {}
@@ -74,6 +105,7 @@ class HybridRAGIndex:
             restored = []
             ids = set()
             dimension = None
+            spans_by_source = defaultdict(list)
             for chunk in restored_chunks:
                 if chunk.session_id != session_id or chunk.chunk_id in ids:
                     raise ValueError("restored chunks must belong to this session and have unique IDs")
@@ -86,15 +118,28 @@ class HybridRAGIndex:
                 dimension = len(vector)
                 ids.add(chunk.chunk_id)
                 restored.append(replace(chunk, embedding=vector))
+                spans = _saved_source_spans(chunk)
+                if spans is not None:
+                    offset = 0
+                    compact_chunk = _compact(chunk.text)
+                    for sid, span in zip(chunk.segment_ids, spans):
+                        a, b = span
+                        spans_by_source[sid].append((a, b, compact_chunk[offset:offset+b-a]))
+                        offset += b-a
+            for spans in spans_by_source.values():
+                spans.sort()
+                if any(a < prev_b for (_, prev_b, _), (a, _, _) in zip(spans, spans[1:])):
+                    raise ValueError("overlapping saved sentence source spans")
             self._chunks = tuple(restored)
             self._dimension = dimension
             # 한 발화가 여러 청크로 분할되었다면 일부만 저장됐을 수 있다.
             # 여러 발화를 묶은 청크는 각각 완전한 발화를 포함한다.
-            self._seen = {sid for c in restored if len(c.segment_ids) > 1
+            self._seen = {sid for c in restored if len(c.segment_ids) > 1 and _saved_source_spans(c) is None
                           for sid in c.segment_ids}
             self._restored_single = {}
+            self._restored_spans = dict(spans_by_source)
             for chunk in restored:
-                if len(chunk.segment_ids) == 1:
+                if len(chunk.segment_ids) == 1 and _saved_source_spans(chunk) is None:
                     self._restored_single.setdefault(chunk.segment_ids[0], []).append(chunk)
             self._pending = []
             self._sequence = 0
@@ -139,8 +184,14 @@ class HybridRAGIndex:
             raise ValueError("retrieval passage dimensions differ")
         return result, prepared
 
-    # [내부] 누적 전사를 글자 수·발화 시간 기준으로 나눠 완성 청크와 남은 버퍼를 구분한다.
+    # [같은 파일 / 다른 파일] _partition → _partition_duration 또는 sentence_chunking._partition_sentences: 설정에 맞게 청킹.
     def _partition(self, pending, flush):
+        if self.chunking_mode == "duration":
+            return self._partition_duration(pending, flush)
+        return self._partition_sentences(pending, flush)
+
+    # [내부] 기존 시간/글자 수 청킹(비교 및 이전 저장 데이터 복원용).
+    def _partition_duration(self, pending, flush):
         batches = []
         group = []
         size = 0
@@ -174,8 +225,39 @@ class HybridRAGIndex:
         return self._commit_batches(batches, remaining, new_segment=new_segment)
 
     # [내부] 지정된 청크를 한 번에 인코딩하고 성공한 경우에만 인덱스 상태를 갱신한다.
-    def _commit_batches(self, batches, remaining, *, new_segment=None):
+    def _commit_batches(self, batches, remaining, *, new_segment=None, track_spans=None):
         texts = [" ".join(t for _, t in b).strip() for b in batches]
+        if track_spans is None:
+            track_spans = self.chunking_mode != "duration"
+        # A sentence may commit only the prefix of a source transcript. Persist
+        # exact compact-text source spans in the opaque chunk ID so replay can
+        # recover an unsaved suffix even when the saved chunk has several sources.
+        cursor = {}
+        pending_sizes = Counter()
+        for source, fragment in self._pending:
+            pending_sizes[source.segment_id] += len(_compact(fragment))
+            cursor[source.segment_id] = len(_compact(source.text))
+        for sid, size in pending_sizes.items():
+            cursor[sid] -= size
+        suffixes = []
+        for batch in batches:
+            spans = {}
+            if track_spans:
+                for source, fragment in batch:
+                    sid = source.segment_id
+                    start = cursor.get(sid, 0)
+                    for a, b, _ in self._restored_spans.get(sid, ()):
+                        if a <= start < b:
+                            start = b
+                    part = _compact(fragment)
+                    end = start + len(part)
+                    if _compact(source.text)[start:end] != part:
+                        raise ValueError("sentence source span does not match transcript")
+                    if sid in spans and spans[sid][1] != start:
+                        raise ValueError("non-contiguous source span in chunk")
+                    spans[sid] = (spans.get(sid, (start, end))[0], end)
+                    cursor[sid] = end
+            suffixes.append("~s1~" + ",".join(f"{a}-{b}" for a, b in spans.values()) if track_spans else "")
         # Do expensive inference outside the state lock. Search sees a complete
         # pre-commit snapshot until the new records are committed together.
         # [같은 파일] HybridRAGIndex._commit_pending → HybridRAGIndex._encode: 본문·검색 구간 벡터 생성 및 검증.
@@ -184,12 +266,12 @@ class HybridRAGIndex:
         passage_updates = {}
         sequence = self._sequence
         ids = {c.chunk_id for c in self._chunks}
-        for batch, text, vector, passages in zip(batches, texts, vectors, passage_groups):
+        for batch, text, vector, passages, suffix in zip(batches, texts, vectors, passage_groups, suffixes):
             start = min(s.start_ms for s, _ in batch)
             end = max(s.end_ms for s, _ in batch)
             while True:
                 sequence += 1
-                chunk_id = f"c{start:012d}_{sequence:06d}"
+                chunk_id = f"c{start:012d}_{sequence:06d}{suffix}"
                 if chunk_id not in ids:
                     ids.add(chunk_id)
                     break
@@ -210,6 +292,7 @@ class HybridRAGIndex:
             if new_segment is not None:
                 self._seen.add(new_segment.segment_id)
                 self._restored_single.pop(new_segment.segment_id, None)
+                self._restored_spans.pop(new_segment.segment_id, None)
         return tuple(records)
 
     # [내부] 원본 발화와 저장된 조각을 대조해 빠진 청크만 복원한다.
@@ -224,7 +307,7 @@ class HybridRAGIndex:
             self._restored_single.pop(segment.segment_id, None)
             return ()
         # [같은 파일] _recover_segment → _partition: 원본 전사에서 기대되는 분할 조각 재구성.
-        batches, _ = self._partition([(segment, text)], flush=True)
+        batches, _ = self._partition_duration([(segment, text)], flush=True)
         saved = Counter(c.text for c in restored)
         missing = []
         for batch in batches:
@@ -236,7 +319,25 @@ class HybridRAGIndex:
         if any(saved.values()):
             raise ValueError("restored chunks do not match source transcript and chunking; re-index from source")
         # [같은 파일] _recover_segment → _commit_batches: 기존 청크와 미확정 버퍼를 보존하고 누락분만 반영.
-        return self._commit_batches(missing, self._pending, new_segment=segment)
+        return self._commit_batches(missing, self._pending, new_segment=segment, track_spans=False)
+
+    # [내부] 문장 청킹은 한 발화의 일부만 저장할 수 있으므로 누락된 원문 범위만 다시 인덱싱한다.
+    def _recover_sentence_segment(self, segment, spans):
+        text = segment.text
+        positions = [i for i, char in enumerate(text) if not char.isspace()]
+        total = len(positions)
+        compact = _compact(text)
+        if any(b > total or compact[a:b] != fragment for a, b, fragment in spans):
+            raise ValueError("saved sentence source span differs from transcript; re-index from source")
+        missing = []
+        cursor = 0
+        for start, end, _ in (*spans, (total, total, "")):
+            if cursor < start:
+                fragment = text[positions[cursor]:positions[start-1]+1]
+                batches, _ = self._partition([(segment, fragment)], flush=True)
+                missing.extend(batches)
+            cursor = end
+        return self._commit_batches(missing, self._pending, new_segment=segment, track_spans=True)
 
     # [외부 호출 / SQL 저장은 호출자] 확정 전사를 누적하고 새로 완성된 청크·임베딩만 반환한다.
     def index_transcript(self, segment):
@@ -247,6 +348,9 @@ class HybridRAGIndex:
                 raise ValueError("transcript session mismatch")
             if segment.segment_id in self._seen:
                 return ()
+            spans = self._restored_spans.get(segment.segment_id)
+            if spans:
+                return self._recover_sentence_segment(segment, spans)
             restored = self._restored_single.get(segment.segment_id)
             if restored:
                 # [같은 파일] index_transcript → _recover_segment: 저장된 일부 조각만 있는 발화의 누락분 복구.
@@ -446,6 +550,7 @@ class HybridRAGIndex:
             self._chunks = ()
             self._seen = set()
             self._restored_single = {}
+            self._restored_spans = {}
             self._dimension = None
             self._passages = {}
             self._search_corpus = None
