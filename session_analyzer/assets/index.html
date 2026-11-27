@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; font-src 'self'; base-uri 'none'; form-action 'none'">
+  <title>CLUE · __SESSION__</title>
+  <link rel="stylesheet" href="dashboard.css">
+  <script src="dashboard.js" defer></script>
+</head>
+<body>
+  <aside class="rail">
+    <a href="#overview" class="brand" aria-label="CLUE 홈">C<span>·</span></a>
+    <div class="rail-label">CLUE<br>SESSION<br>ANALYZER</div>
+    <div class="rail-bottom">LOCAL<br>OFFLINE<br><span>v1.0</span></div>
+  </aside>
+  <main>
+    <header class="topbar"><div><span class="eyebrow">CLUE / SESSION INTELLIGENCE</span><h1>세션 분석</h1></div><div class="top-actions"><span class="pill">● 오프라인 보고서</span><button id="export-toggle">분석 데이터 ↓</button></div></header>
+    <div class="sessionbar"><div><span id="origin" class="badge"></span><strong id="session-id"></strong></div><span id="range-caption"></span></div>
+    <div id="export-panel" class="panel exports" hidden></div>
+    <nav class="tabs" role="tablist" aria-label="분석 모듈">
+      <button id="tab-overview" data-tab="overview" role="tab" aria-controls="overview">01 <span>세션 개요</span><small>Overview</small></button>
+      <button id="tab-frames" data-tab="frames" role="tab" aria-controls="frames">02 <span>프레임 분석</span><small>Frame Analysis</small></button>
+      <button id="tab-audio" data-tab="audio" role="tab" aria-controls="audio">03 <span>음성 분석</span><small>Audio Analysis</small></button>
+      <button id="tab-context" data-tab="context" role="tab" aria-controls="context">04 <span>맥락 · RAG</span><small>Context & RAG</small></button>
+      <button id="tab-response" data-tab="response" role="tab" aria-controls="response">05 <span>응답 성능</span><small>Response Analysis</small></button>
+    </nav>
+    <noscript><p class="notice">이 오프라인 보고서는 JavaScript를 켜야 그래프와 필터를 사용할 수 있습니다. CSV/JSON 파일도 함께 제공됩니다.</p></noscript>
+    <section id="overview" role="tabpanel" aria-labelledby="tab-overview"></section>
+    <section id="frames" role="tabpanel" aria-labelledby="tab-frames" hidden></section>
+    <section id="audio" role="tabpanel" aria-labelledby="tab-audio" hidden></section>
+    <section id="context" role="tabpanel" aria-labelledby="tab-context" hidden></section>
+    <section id="response" role="tabpanel" aria-labelledby="tab-response" hidden></section>
+    <footer>CLUE Session Analyzer <span>기록된 데이터와 코드 기본값을 구분합니다. 미기록은 0이 아닙니다.</span><button id="diagnostic-toggle">데이터 진단</button></footer>
+    <div id="diagnostics" class="panel" hidden></div>
+  </main>
+  <dialog id="image-dialog"><button id="close-image" aria-label="확대 이미지 닫기">닫기 ×</button><img id="large-image" alt="확대한 강의 화면"><p id="large-caption"></p></dialog>
+  <script id="session-data" type="application/json">__DATA__</script>
+</body>
+</html>

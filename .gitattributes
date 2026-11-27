@@ -1,0 +1,2 @@
+# Windows double-click launchers must keep CRLF when checked out.
+*.cmd text eol=crlf

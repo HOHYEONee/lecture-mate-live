@@ -14,6 +14,11 @@ P-실무프로젝트 SW1분반 1조 · Python 3.11+ · 모듈 계약 v1.6
 
 멘토링 시연은 [시연 진행서](docs/mentoring-demo.md)에서 설치, 강의 자료 선택, 질문 순서를 확인하세요.
 
+수집한 세션은 **[CLUE Session Analyzer](docs/session-analyzer.md)**로 분석할 수 있습니다.
+`python -m scripts.analyze_session` 또는 `CLUE 세션 분석.cmd`를 실행하면
+이미지·전사·질문 맥락·응답 성능을 담은 오프라인 HTML 보고서를 만듭니다.
+분석기는 Python 표준 라이브러리만 사용하며 별도 AI 패키지나 모델 설치가 필요하지 않습니다.
+
 ## 문서 및 코드
 
 | 경로 | 내용 |
