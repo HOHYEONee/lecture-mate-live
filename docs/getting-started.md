@@ -5,6 +5,8 @@
 
 이 문서는 **개발 순서와 독립 테스트 방법**을 설명합니다. 기능과 데이터 형식의 최종 기준은 [팀 개발 안내](../interface_spec/README.md) → [상세 명세](../interface_spec/interface_spec_v1.md) → [Python 공통 계약](../interface_spec/contracts.py) 순서로 확인합니다. 이 문서에 나온 파일 경로 중 아직 없는 모듈 폴더는 **권장 구조**이며, 공통 계약을 변경하지 않습니다.
 
+통합 앱의 설치와 실행은 **Windows x64 · Python 3.12** 환경을 기준으로 합니다. [Windows 설치 안내](../INSTALL-dependencies-win-py312.md)와 [통합 실행 안내](integration-runtime.md)를 따르세요. 아래 Python 3.11 예시는 공통 기반 단위 테스트용입니다.
+
 ## 1. 모두가 먼저 할 일
 
 ### 1-1. 프로젝트 받기 (Windows PowerShell)
@@ -14,13 +16,13 @@ git clone https://github.com/HOHYEONee/lecture-mate-live.git
 cd lecture-mate-live
 py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe --version
-.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p test_core.py -v
 ```
 
 - Python 3.11이 아닌 **3.11 이상** 버전만 설치되어 있다면 `py -3.11` 대신 `py -3`을 사용해도 됩니다. 버전 출력이 3.11 이상인지 확인합니다.
 - 가상환경 활성화는 필수가 아닙니다. 위 명령은 PowerShell 실행 정책과 무관하게 가상환경의 Python을 직접 사용합니다.
-- 현재 공통 기반 테스트 **4개가 통과**하는 것이 준비 완료 기준입니다. 이 테스트에는 OpenCV·Whisper·PySide6 설치가 필요하지 않습니다.
-- 프레임·음성·UI별 추가 라이브러리와 GPU 설정은 각 담당자가 자신의 구현에 맞게 선택하고, 실제 사용한 의존성을 추후 팀이 합의한 방식으로 기록합니다. **현재 저장소에 통합 `requirements.txt`는 없습니다.**
+- 공통 기반 테스트는 `SessionClock`과 `SessionManager`를 확인하며 Python 표준 라이브러리로 실행합니다.
+- 전체 테스트는 통합 앱의 의존성을 설치한 뒤 [루트 README의 테스트 절차](../README.md#테스트)에 따라 실행합니다.
 
 ### 1-2. 기존 공통 코드 확인
 

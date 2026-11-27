@@ -153,6 +153,7 @@ activemq-data/
 .env
 .envrc
 .venv
+.venv312/
 env/
 venv/
 ENV/
@@ -221,3 +222,18 @@ __marimo__/
 
 # Local captured lecture data and transcripts
 sessions/
+/experiments/
+/models/
+*.pdiparams
+*.pdmodel
+*.safetensors
+*.pt
+*.pth
+*.onnx
+
+# Local analyzer reports, synthetic sessions and visual verification evidence
+/analysis/
+/synthetic_sessions/
+/analyzer_evidence/
+.env.*
+!.env.example

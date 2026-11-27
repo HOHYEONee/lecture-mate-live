@@ -1,0 +1,6 @@
+# Windows x64 / Python 3.12 base profile. Preinstall the PyTorch CPU wheel first.
+-c constraints-win-py312.txt
+-r requirements-common-win-py312.txt
+-r requirements-desktop-win-py312.txt
+-r requirements-audio-rag-win-py312.txt
+-r requirements-torch-win-py312.txt

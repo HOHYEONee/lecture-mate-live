@@ -1,0 +1,6 @@
+# Optional candidate only. Do NOT include in requirements-integration yet.
+# The audio branch used these DLL wheels; the selected PyTorch CUDA wheel may
+# require different exact nvidia-* package versions in the same environment.
+nvidia-cublas-cu12==12.9.2.10
+nvidia-cudnn-cu12==9.28.1.4
+nvidia-cuda-nvrtc-cu12==12.9.86

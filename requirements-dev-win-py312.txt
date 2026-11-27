@@ -1,0 +1,4 @@
+-c constraints-win-py312.txt
+
+# Frame processing's declared synthetic-test and SSIM benchmark dependency.
+scikit-image>=0.25,<0.27
