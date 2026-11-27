@@ -222,7 +222,14 @@ __marimo__/
 
 # Local captured lecture data and transcripts
 sessions/
+/experiments/
 /models/
+*.pdiparams
+*.pdmodel
+*.safetensors
+*.pt
+*.pth
+*.onnx
 
 # Local analyzer reports, synthetic sessions and visual verification evidence
 /analysis/
